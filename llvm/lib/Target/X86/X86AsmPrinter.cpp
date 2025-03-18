@@ -923,7 +923,7 @@ void X86AsmPrinter::emitStartOfAsmFile(Module &M) {
   if (TT.isOSBinFormatCOFF()) {
     MCSection *Cur = OutStreamer->getCurrentSectionOnly();
     MCSection *Nt = MMI->getContext().getCOFFSection(
-        "newworld",
+        ".belabs",
         COFF::IMAGE_SCN_CNT_INITIALIZED_DATA | COFF::IMAGE_SCN_MEM_READ,
         SectionKind::getReadOnly());
     OutStreamer->switchSection(Nt);
