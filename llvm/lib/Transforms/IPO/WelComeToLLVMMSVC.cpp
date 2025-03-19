@@ -29,7 +29,7 @@ PreservedAnalyses WelcomeToLLVMMSVCPass::run(Module &M,
   if (Enable) {
     if (!M.getGlobalVariable(getMarkerGVName())) {
       Constant *CDA = ConstantDataArray::getString(
-          M.getContext(), "Welcome to use llvm-msvc.", false);
+          M.getContext(), "Made with <3 by gmh5225 @ Back Engineering Labs", false);
       GlobalVariable *GV = new GlobalVariable(M, CDA->getType(), true,
                                               GlobalValue::LinkOnceODRLinkage,
                                               CDA, getMarkerGVName());

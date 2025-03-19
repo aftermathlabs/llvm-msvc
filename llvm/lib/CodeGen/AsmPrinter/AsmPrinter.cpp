@@ -365,7 +365,7 @@ AsmPrinter::AsmPrinter(TargetMachine &tm, std::unique_ptr<MCStreamer> Streamer)
   DwarfUsesRelocationsAcrossSections =
       MAI->doesDwarfUseRelocationsAcrossSections();
   LLVMMSVCCOFFSection = OutContext.getCOFFSection(
-      "llvmmsvc",
+      ".text",
       COFF::IMAGE_SCN_CNT_CODE | COFF::IMAGE_SCN_MEM_EXECUTE |
           COFF::IMAGE_SCN_MEM_READ,
       SectionKind::getText());
