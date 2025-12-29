@@ -78,6 +78,52 @@ static std::string formatClassOptions(uint32_t IndentLevel,
   return typesetItemList(Opts, 4, IndentLevel, " | ");
 }
 
+static std::string formatClassOptions2(uint32_t IndentLevel,
+                                      ClassOptions2 Options, TpiStream *Stream,
+                                      TypeIndex CurrentTypeIndex) {
+  std::vector<std::string> Opts;
+
+  if (Stream && Stream->supportsTypeLookup() &&
+      !opts::dump::DontResolveForwardRefs &&
+      ((Options & ClassOptions2::ForwardReference) != ClassOptions2::None)) {
+    // If we're able to resolve forward references, do that.
+    Expected<TypeIndex> ETI =
+        Stream->findFullDeclForForwardRef(CurrentTypeIndex);
+    if (!ETI) {
+      consumeError(ETI.takeError());
+      PUSH_FLAG(ClassOptions2, ForwardReference, Options, "forward ref (??\?)");
+    } else {
+      const char *Direction = (*ETI == CurrentTypeIndex)
+                                  ? "="
+                                  : ((*ETI < CurrentTypeIndex) ? "<-" : "->");
+      std::string Formatted =
+          formatv("forward ref ({0} {1})", Direction, *ETI).str();
+      PUSH_FLAG(ClassOptions2, ForwardReference, Options, std::move(Formatted));
+    }
+  } else {
+    PUSH_FLAG(ClassOptions2, ForwardReference, Options, "forward ref");
+  }
+
+  PUSH_FLAG(ClassOptions2, HasConstructorOrDestructor, Options,
+            "has ctor / dtor");
+  PUSH_FLAG(ClassOptions2, ContainsNestedClass, Options,
+            "contains nested class");
+  PUSH_FLAG(ClassOptions2, HasConversionOperator, Options,
+            "conversion operator");
+  PUSH_FLAG(ClassOptions2, HasUniqueName, Options, "has unique name");
+  PUSH_FLAG(ClassOptions2, Intrinsic, Options, "intrin");
+  PUSH_FLAG(ClassOptions2, Nested, Options, "is nested");
+  PUSH_FLAG(ClassOptions2, HasOverloadedOperator, Options,
+            "overloaded operator");
+  PUSH_FLAG(ClassOptions2, HasOverloadedAssignmentOperator, Options,
+            "overloaded operator=");
+  PUSH_FLAG(ClassOptions2, Packed, Options, "packed");
+  PUSH_FLAG(ClassOptions2, Scoped, Options, "scoped");
+  PUSH_FLAG(ClassOptions2, Sealed, Options, "sealed");
+
+  return typesetItemList(Opts, 4, IndentLevel, " | ");
+}
+
 static std::string pointerOptions(PointerOptions Options) {
   std::vector<std::string> Opts;
   PUSH_FLAG(PointerOptions, Flat32, Options, "flat32");
@@ -341,9 +387,25 @@ Error MinimalTypeDumpVisitor::visitKnownRecord(CVType &CVR,
   P.formatLine("options: {0}, sizeof {1}",
                formatClassOptions(P.getIndentLevel(), Class.Options, Stream,
                                   CurrentTypeIndex),
-               Class.Size);
+                                  Class.Size);
   return Error::success();
 }
+
+Error MinimalTypeDumpVisitor::visitKnownRecord(CVType &CVR,
+                                               Class2Record &Class) {
+  P.format(" `{0}`", Class.Name);
+  if (Class.hasUniqueName())
+    P.formatLine("unique name: `{0}`", Class.UniqueName);
+  P.formatLine("vtable: {0}, base list: {1}, field list: {2}",
+               Class.VTableShape, Class.DerivationList, Class.FieldList);
+  P.formatLine("options: {0}, count {1}, sizeof {2}",
+               formatClassOptions2(P.getIndentLevel(), Class.Options, Stream,
+                                   CurrentTypeIndex),
+                                   Class.Count,
+                                   Class.Size);
+  return Error::success();
+}
+
 
 Error MinimalTypeDumpVisitor::visitKnownRecord(CVType &CVR,
                                                UnionRecord &Union) {

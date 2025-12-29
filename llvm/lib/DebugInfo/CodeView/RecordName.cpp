@@ -112,6 +112,11 @@ Error TypeNameComputer::visitKnownRecord(CVType &CVR, ClassRecord &Class) {
   return Error::success();
 }
 
+Error TypeNameComputer::visitKnownRecord(CVType &CVR, Class2Record &Class) {
+  Name = Class.getName();
+  return Error::success();
+}
+
 Error TypeNameComputer::visitKnownRecord(CVType &CVR, UnionRecord &Union) {
   Name = Union.getName();
   return Error::success();

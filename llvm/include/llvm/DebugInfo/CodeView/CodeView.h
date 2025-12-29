@@ -220,6 +220,23 @@ enum class ClassOptions : uint16_t {
 };
 CV_DEFINE_ENUM_CLASS_FLAGS_OPERATORS(ClassOptions)
 
+enum class ClassOptions2 : uint32_t {
+  None = 0x0000,
+  Packed = 0x0001,
+  HasConstructorOrDestructor = 0x0002,
+  HasOverloadedOperator = 0x0004,
+  Nested = 0x0008,
+  ContainsNestedClass = 0x0010,
+  HasOverloadedAssignmentOperator = 0x0020,
+  HasConversionOperator = 0x0040,
+  ForwardReference = 0x0080,
+  Scoped = 0x0100,
+  HasUniqueName = 0x0200,
+  Sealed = 0x0400,
+  Intrinsic = 0x2000
+};
+CV_DEFINE_ENUM_CLASS_FLAGS_OPERATORS(ClassOptions2)
+
 enum class FrameProcedureOptions : uint32_t {
   None = 0x00000000,
   HasAlloca = 0x00000001,

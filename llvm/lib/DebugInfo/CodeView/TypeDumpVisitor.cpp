@@ -44,6 +44,21 @@ static const EnumEntry<uint16_t> ClassOptionNames[] = {
     ENUM_ENTRY(ClassOptions, Intrinsic),
 };
 
+static const EnumEntry<uint32_t> ClassOption2Names[] = {
+    ENUM_ENTRY(ClassOptions2, Packed),
+    ENUM_ENTRY(ClassOptions2, HasConstructorOrDestructor),
+    ENUM_ENTRY(ClassOptions2, HasOverloadedOperator),
+    ENUM_ENTRY(ClassOptions2, Nested),
+    ENUM_ENTRY(ClassOptions2, ContainsNestedClass),
+    ENUM_ENTRY(ClassOptions2, HasOverloadedAssignmentOperator),
+    ENUM_ENTRY(ClassOptions2, HasConversionOperator),
+    ENUM_ENTRY(ClassOptions2, ForwardReference),
+    ENUM_ENTRY(ClassOptions2, Scoped),
+    ENUM_ENTRY(ClassOptions2, HasUniqueName),
+    ENUM_ENTRY(ClassOptions2, Sealed),
+    ENUM_ENTRY(ClassOptions2, Intrinsic),
+};
+
 static const EnumEntry<uint8_t> MemberAccessNames[] = {
     ENUM_ENTRY(MemberAccess, None), ENUM_ENTRY(MemberAccess, Private),
     ENUM_ENTRY(MemberAccess, Protected), ENUM_ENTRY(MemberAccess, Public),
@@ -253,6 +268,19 @@ Error TypeDumpVisitor::visitKnownRecord(CVType &CVR, ClassRecord &Class) {
   W->printNumber("SizeOf", Class.getSize());
   W->printString("Name", Class.getName());
   if (Props & uint16_t(ClassOptions::HasUniqueName))
+    W->printString("LinkageName", Class.getUniqueName());
+  return Error::success();
+}
+
+Error TypeDumpVisitor::visitKnownRecord(CVType &CVR, Class2Record &Class) {
+  uint32_t Props = static_cast<uint32_t>(Class.getOptions());
+  W->printFlags("Properties", Props, ArrayRef(ClassOption2Names));
+  printTypeIndex("FieldList", Class.getFieldList());
+  printTypeIndex("DerivedFrom", Class.getDerivationList());
+  printTypeIndex("VShape", Class.getVTableShape());
+  W->printNumber("SizeOf", Class.getSize());
+  W->printString("Name", Class.getName());
+  if (Props & uint32_t(ClassOptions2::HasUniqueName))
     W->printString("LinkageName", Class.getUniqueName());
   return Error::success();
 }

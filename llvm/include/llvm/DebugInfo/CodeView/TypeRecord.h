@@ -494,6 +494,89 @@ public:
   uint64_t Size = 0;
 };
 
+class Tag2Record : public TypeRecord {
+protected:
+  Tag2Record() = default;
+  explicit Tag2Record(TypeRecordKind Kind) : TypeRecord(Kind) {}
+  Tag2Record(TypeRecordKind Kind, ClassOptions2 Options,
+             TypeIndex FieldList, StringRef Name, StringRef UniqueName)
+      : TypeRecord(Kind), Options(Options),
+        FieldList(FieldList), Name(Name), UniqueName(UniqueName) {}
+
+public:
+  static const int HfaKindShift = 11;
+  static const int HfaKindMask = 0x1800;
+  static const int WinRTKindShift = 14;
+  static const int WinRTKindMask = 0xC000;
+
+  bool hasUniqueName() const {
+    return (getOptions() & ClassOptions2::HasUniqueName) != ClassOptions2::None;
+  }
+
+  bool isNested() const {
+    return (getOptions() & ClassOptions2::Nested) != ClassOptions2::None;
+  }
+
+  bool isForwardRef() const {
+    return (getOptions() & ClassOptions2::ForwardReference) !=
+           ClassOptions2::None;
+  }
+
+  bool containsNestedClass() const {
+    return (getOptions() & ClassOptions2::ContainsNestedClass) !=
+           ClassOptions2::None;
+  }
+
+  bool isScoped() const {
+    return (getOptions() & ClassOptions2::Scoped) != ClassOptions2::None;
+  }
+
+  ClassOptions2 getOptions() const { return Options; }
+  TypeIndex getFieldList() const { return FieldList; }
+  StringRef getName() const { return Name; }
+  StringRef getUniqueName() const { return UniqueName; }
+
+  ClassOptions2 Options = ClassOptions2::None;
+  TypeIndex FieldList;
+  StringRef Name;
+  StringRef UniqueName;
+};
+
+// LF_CLASS2, LF_STRUCTURE2, LF_INTERFACE2
+class Class2Record : public Tag2Record {
+public:
+  Class2Record() = default;
+  explicit Class2Record(TypeRecordKind Kind) : Tag2Record(Kind) {}
+  Class2Record(TypeRecordKind Kind, ClassOptions2 Options,
+              TypeIndex FieldList, TypeIndex DerivationList,
+              TypeIndex VTableShape, uint64_t Size, StringRef Name,
+              StringRef UniqueName)
+      : Tag2Record(Kind, Options, FieldList, Name, UniqueName),
+        DerivationList(DerivationList), VTableShape(VTableShape), Size(Size) {}
+
+  HfaKind getHfa() const {
+    uint16_t Value = static_cast<uint16_t>(Options);
+    Value = (Value & HfaKindMask) >> HfaKindShift;
+    return static_cast<HfaKind>(Value);
+  }
+
+  WindowsRTClassKind getWinRTKind() const {
+    uint16_t Value = static_cast<uint16_t>(Options);
+    Value = (Value & WinRTKindMask) >> WinRTKindShift;
+    return static_cast<WindowsRTClassKind>(Value);
+  }
+
+  TypeIndex getDerivationList() const { return DerivationList; }
+  TypeIndex getVTableShape() const { return VTableShape; }
+  uint64_t getCount() const { return Count; }
+  uint64_t getSize() const { return Size; }
+
+  TypeIndex DerivationList;
+  TypeIndex VTableShape;
+  uint64_t Count = 0;
+  uint64_t Size = 0;
+};
+
 // LF_UNION
 struct UnionRecord : public TagRecord {
   UnionRecord() = default;

@@ -457,6 +457,26 @@ Error TypeRecordMapping::visitKnownRecord(CVType &CVR, ClassRecord &Record) {
   return Error::success();
 }
 
+Error TypeRecordMapping::visitKnownRecord(CVType &CVR, Class2Record &Record) {
+  assert((CVR.kind() == TypeLeafKind::LF_STRUCTURE2) ||
+         (CVR.kind() == TypeLeafKind::LF_CLASS2));
+
+  std::string PropertiesNames =
+      getFlagNames(IO, static_cast<uint16_t>(Record.Options),
+                   ArrayRef(getClassOptionNames()));
+  //error(IO.mapInteger(Record.MemberCount, "MemberCount"));
+  error(IO.mapEnum(Record.Options, "Properties" + PropertiesNames));
+  error(IO.mapInteger(Record.FieldList, "FieldList"));
+  error(IO.mapInteger(Record.DerivationList, "DerivedFrom"));
+  error(IO.mapInteger(Record.VTableShape, "VShape"));
+  error(IO.mapEncodedInteger(Record.Count, "Count"));
+  error(IO.mapEncodedInteger(Record.Size, "SizeOf"));
+  error(mapNameAndUniqueName(IO, Record.Name, Record.UniqueName,
+                             Record.hasUniqueName()));
+
+  return Error::success();
+}
+
 Error TypeRecordMapping::visitKnownRecord(CVType &CVR, UnionRecord &Record) {
   std::string PropertiesNames =
       getFlagNames(IO, static_cast<uint16_t>(Record.Options),

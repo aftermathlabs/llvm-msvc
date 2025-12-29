@@ -329,6 +329,11 @@ static void discoverTypeIndices(ArrayRef<uint8_t> Content, TypeLeafKind Kind,
   case TypeLeafKind::LF_INTERFACE:
     Refs.push_back({TiRefKind::TypeRef, 4, 3});
     break;
+  case TypeLeafKind::LF_CLASS2:
+  case TypeLeafKind::LF_STRUCTURE2:
+  case TypeLeafKind::LF_INTERFACE2:
+    Refs.push_back({TiRefKind::TypeRef, 4, 3});
+    break;
   case TypeLeafKind::LF_UNION:
     Refs.push_back({TiRefKind::TypeRef, 4, 1});
     break;
