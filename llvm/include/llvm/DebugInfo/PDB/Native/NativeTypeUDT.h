@@ -27,6 +27,9 @@ public:
                 codeview::ClassRecord Class);
 
   NativeTypeUDT(NativeSession &Session, SymIndexId Id, codeview::TypeIndex TI,
+                codeview::Class2Record Class);
+
+  NativeTypeUDT(NativeSession &Session, SymIndexId Id, codeview::TypeIndex TI,
                 codeview::UnionRecord Union);
 
   NativeTypeUDT(NativeSession &Session, SymIndexId Id,
@@ -64,9 +67,11 @@ protected:
   codeview::TypeIndex Index;
 
   std::optional<codeview::ClassRecord> Class;
+  std::optional<codeview::Class2Record> Class2;
   std::optional<codeview::UnionRecord> Union;
   NativeTypeUDT *UnmodifiedType = nullptr;
   codeview::TagRecord *Tag = nullptr;
+  codeview::Tag2Record *Tag2 = nullptr;
   std::optional<codeview::ModifierRecord> Modifiers;
 };
 

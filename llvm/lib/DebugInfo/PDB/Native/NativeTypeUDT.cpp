@@ -23,6 +23,11 @@ NativeTypeUDT::NativeTypeUDT(NativeSession &Session, SymIndexId Id,
       Class(std::move(CR)), Tag(&*Class) {}
 
 NativeTypeUDT::NativeTypeUDT(NativeSession &Session, SymIndexId Id,
+                             codeview::TypeIndex TI, codeview::Class2Record CR)
+    : NativeRawSymbol(Session, PDB_SymType::UDT, Id), Index(TI),
+      Class2(std::move(CR)), Tag2(&*Class2) {}
+
+NativeTypeUDT::NativeTypeUDT(NativeSession &Session, SymIndexId Id,
                              codeview::TypeIndex TI, codeview::UnionRecord UR)
     : NativeRawSymbol(Session, PDB_SymType::UDT, Id), Index(TI),
       Union(std::move(UR)), Tag(&*Union) {}
@@ -75,6 +80,9 @@ std::string NativeTypeUDT::getName() const {
   if (UnmodifiedType)
     return UnmodifiedType->getName();
 
+  if (Tag2)
+    return std::string(Tag2->getName());
+
   return std::string(Tag->getName());
 }
 
@@ -91,6 +99,9 @@ SymIndexId NativeTypeUDT::getVirtualTableShapeId() const {
   if (UnmodifiedType)
     return UnmodifiedType->getVirtualTableShapeId();
 
+  if (Class2)
+    return Session.getSymbolCache().findSymbolByTypeIndex(Class2->VTableShape);
+
   if (Class)
     return Session.getSymbolCache().findSymbolByTypeIndex(Class->VTableShape);
 
@@ -100,6 +111,9 @@ SymIndexId NativeTypeUDT::getVirtualTableShapeId() const {
 uint64_t NativeTypeUDT::getLength() const {
   if (UnmodifiedType)
     return UnmodifiedType->getLength();
+
+  if (Class2)
+    return Class2->getSize();
 
   if (Class)
     return Class->getSize();
@@ -111,23 +125,55 @@ PDB_UdtType NativeTypeUDT::getUdtKind() const {
   if (UnmodifiedType)
     return UnmodifiedType->getUdtKind();
 
-  switch (Tag->Kind) {
-  case TypeRecordKind::Class:
-    return PDB_UdtType::Class;
-  case TypeRecordKind::Union:
-    return PDB_UdtType::Union;
-  case TypeRecordKind::Struct:
-    return PDB_UdtType::Struct;
-  case TypeRecordKind::Interface:
-    return PDB_UdtType::Interface;
-  default:
-    llvm_unreachable("Unexpected udt kind");
+  if (Tag2) {
+    switch (Tag2->Kind) {
+    case TypeRecordKind::Class2:
+      return PDB_UdtType::Class;
+    case TypeRecordKind::Struct2:
+      return PDB_UdtType::Struct;
+
+    case TypeRecordKind::Class:
+      return PDB_UdtType::Class;
+    case TypeRecordKind::Union:
+      return PDB_UdtType::Union;
+    case TypeRecordKind::Struct:
+      return PDB_UdtType::Struct;
+    case TypeRecordKind::Interface:
+      return PDB_UdtType::Interface;
+    default:
+      llvm_unreachable("Unexpected udt kind");
+    }
   }
+
+  if (Tag) {
+    switch (Tag->Kind) {
+    case TypeRecordKind::Class2:
+      return PDB_UdtType::Class;
+    case TypeRecordKind::Struct2:
+      return PDB_UdtType::Struct;
+
+    case TypeRecordKind::Class:
+      return PDB_UdtType::Class;
+    case TypeRecordKind::Union:
+      return PDB_UdtType::Union;
+    case TypeRecordKind::Struct:
+      return PDB_UdtType::Struct;
+    case TypeRecordKind::Interface:
+      return PDB_UdtType::Interface;
+    default:
+      llvm_unreachable("Unexpected udt kind");
+    }
+  }
+  llvm_unreachable("Unexpected udt kind");
 }
 
 bool NativeTypeUDT::hasConstructor() const {
   if (UnmodifiedType)
     return UnmodifiedType->hasConstructor();
+
+  if (Tag2) {
+    return (Tag2->Options & ClassOptions2::HasConstructorOrDestructor) != ClassOptions2::None;
+  }
 
   return (Tag->Options & ClassOptions::HasConstructorOrDestructor) !=
          ClassOptions::None;
@@ -144,29 +190,42 @@ bool NativeTypeUDT::hasAssignmentOperator() const {
   if (UnmodifiedType)
     return UnmodifiedType->hasAssignmentOperator();
 
-  return (Tag->Options & ClassOptions::HasOverloadedAssignmentOperator) !=
-         ClassOptions::None;
+  if (Tag2) {
+    return (Tag2->Options & ClassOptions2::HasOverloadedAssignmentOperator) != ClassOptions2::None;
+  }
+
+  return (Tag->Options & ClassOptions::HasOverloadedAssignmentOperator) !=   ClassOptions::None;
 }
 
 bool NativeTypeUDT::hasCastOperator() const {
   if (UnmodifiedType)
     return UnmodifiedType->hasCastOperator();
 
-  return (Tag->Options & ClassOptions::HasConversionOperator) !=
-         ClassOptions::None;
+  if (Tag2) {
+    return (Tag2->Options & ClassOptions2::HasConversionOperator) != ClassOptions2::None;
+  }
+
+  return (Tag->Options & ClassOptions::HasConversionOperator) != ClassOptions::None;
 }
 
 bool NativeTypeUDT::hasNestedTypes() const {
   if (UnmodifiedType)
     return UnmodifiedType->hasNestedTypes();
 
-  return (Tag->Options & ClassOptions::ContainsNestedClass) !=
-         ClassOptions::None;
+  if (Tag2) {
+    return (Tag2->Options & ClassOptions2::ContainsNestedClass) !=  ClassOptions2::None;
+  }
+
+  return (Tag->Options & ClassOptions::ContainsNestedClass) != ClassOptions::None;
 }
 
 bool NativeTypeUDT::hasOverloadedOperator() const {
   if (UnmodifiedType)
     return UnmodifiedType->hasOverloadedOperator();
+
+  if (Tag2) {
+    return (Tag2->Options & ClassOptions2::HasOverloadedOperator) != ClassOptions2::None;
+  }
 
   return (Tag->Options & ClassOptions::HasOverloadedOperator) !=
          ClassOptions::None;
@@ -178,6 +237,9 @@ bool NativeTypeUDT::isIntrinsic() const {
   if (UnmodifiedType)
     return UnmodifiedType->isIntrinsic();
 
+  if (Tag2) {
+    return (Tag2->Options & ClassOptions2::Intrinsic) != ClassOptions2::None;
+  }
   return (Tag->Options & ClassOptions::Intrinsic) != ClassOptions::None;
 }
 
@@ -185,6 +247,9 @@ bool NativeTypeUDT::isNested() const {
   if (UnmodifiedType)
     return UnmodifiedType->isNested();
 
+  if (Tag2) {
+    return (Tag2->Options & ClassOptions2::Nested) != ClassOptions2::None;
+  }
   return (Tag->Options & ClassOptions::Nested) != ClassOptions::None;
 }
 
@@ -192,6 +257,9 @@ bool NativeTypeUDT::isPacked() const {
   if (UnmodifiedType)
     return UnmodifiedType->isPacked();
 
+  if (Tag2) {
+    return (Tag2->Options & ClassOptions2::Packed) != ClassOptions2::None;
+  }
   return (Tag->Options & ClassOptions::Packed) != ClassOptions::None;
 }
 
@@ -201,6 +269,9 @@ bool NativeTypeUDT::isScoped() const {
   if (UnmodifiedType)
     return UnmodifiedType->isScoped();
 
+  if (Tag2) {
+    return (Tag2->Options & ClassOptions2::Scoped) != ClassOptions2::None;
+  }
   return (Tag->Options & ClassOptions::Scoped) != ClassOptions::None;
 }
 

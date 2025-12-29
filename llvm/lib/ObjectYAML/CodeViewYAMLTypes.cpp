@@ -66,6 +66,7 @@ LLVM_YAML_DECLARE_BITSET_TRAITS(PointerOptions)
 LLVM_YAML_DECLARE_BITSET_TRAITS(ModifierOptions)
 LLVM_YAML_DECLARE_BITSET_TRAITS(FunctionOptions)
 LLVM_YAML_DECLARE_BITSET_TRAITS(ClassOptions)
+LLVM_YAML_DECLARE_BITSET_TRAITS(ClassOptions2)
 LLVM_YAML_DECLARE_BITSET_TRAITS(MethodOptions)
 
 LLVM_YAML_DECLARE_MAPPING_TRAITS(OneMethodRecord)
@@ -378,6 +379,26 @@ void ScalarBitSetTraits<ClassOptions>::bitset(IO &IO, ClassOptions &Options) {
   IO.bitSetCase(Options, "Intrinsic", ClassOptions::Intrinsic);
 }
 
+void ScalarBitSetTraits<ClassOptions2>::bitset(IO &IO, ClassOptions2 &Options) {
+  IO.bitSetCase(Options, "None", ClassOptions2::None);
+  IO.bitSetCase(Options, "HasConstructorOrDestructor",
+                ClassOptions2::HasConstructorOrDestructor);
+  IO.bitSetCase(Options, "HasOverloadedOperator",
+                ClassOptions2::HasOverloadedOperator);
+  IO.bitSetCase(Options, "Nested", ClassOptions2::Nested);
+  IO.bitSetCase(Options, "ContainsNestedClass",
+                ClassOptions2::ContainsNestedClass);
+  IO.bitSetCase(Options, "HasOverloadedAssignmentOperator",
+                ClassOptions2::HasOverloadedAssignmentOperator);
+  IO.bitSetCase(Options, "HasConversionOperator",
+                ClassOptions2::HasConversionOperator);
+  IO.bitSetCase(Options, "ForwardReference", ClassOptions2::ForwardReference);
+  IO.bitSetCase(Options, "Scoped", ClassOptions2::Scoped);
+  IO.bitSetCase(Options, "HasUniqueName", ClassOptions2::HasUniqueName);
+  IO.bitSetCase(Options, "Sealed", ClassOptions2::Sealed);
+  IO.bitSetCase(Options, "Intrinsic", ClassOptions2::Intrinsic);
+}
+
 void ScalarBitSetTraits<MethodOptions>::bitset(IO &IO, MethodOptions &Options) {
   IO.bitSetCase(Options, "None", MethodOptions::None);
   IO.bitSetCase(Options, "Pseudo", MethodOptions::Pseudo);
@@ -526,6 +547,17 @@ template <> void LeafRecordImpl<ClassRecord>::map(IO &IO) {
   IO.mapRequired("UniqueName", Record.UniqueName);
   IO.mapRequired("DerivationList", Record.DerivationList);
   IO.mapRequired("VTableShape", Record.VTableShape);
+  IO.mapRequired("Size", Record.Size);
+}
+
+template <> void LeafRecordImpl<Class2Record>::map(IO &IO) {
+  IO.mapRequired("Options", Record.Options);
+  IO.mapRequired("FieldList", Record.FieldList);
+  IO.mapRequired("Name", Record.Name);
+  IO.mapRequired("UniqueName", Record.UniqueName);
+  IO.mapRequired("DerivationList", Record.DerivationList);
+  IO.mapRequired("VTableShape", Record.VTableShape);
+  IO.mapRequired("Count", Record.Count);
   IO.mapRequired("Size", Record.Size);
 }
 

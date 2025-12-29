@@ -39,6 +39,21 @@ static uint32_t getHashForUdt(const TagRecord &Rec,
   return hashBufferV8(FullRecord);
 }
 
+static uint32_t getHashForUdt(const Tag2Record &Rec,
+                              ArrayRef<uint8_t> FullRecord) {
+  ClassOptions2 Opts = Rec.getOptions();
+  bool ForwardRef = bool(Opts & ClassOptions2::ForwardReference);
+  bool Scoped = bool(Opts & ClassOptions2::Scoped);
+  bool HasUniqueName = bool(Opts & ClassOptions2::HasUniqueName);
+  bool IsAnon = HasUniqueName && isAnonymous(Rec.getName());
+
+  if (!ForwardRef && !Scoped && !IsAnon)
+    return hashStringV1(Rec.getName());
+  if (!ForwardRef && HasUniqueName && !IsAnon)
+    return hashStringV1(Rec.getUniqueName());
+  return hashBufferV8(FullRecord);
+}
+
 template <typename T>
 static Expected<uint32_t> getHashForUdt(const CVType &Rec) {
   T Deserialized;
@@ -55,7 +70,7 @@ static Expected<TagRecordHash> getTagRecordHashForUdt(const CVType &Rec) {
                                                Deserialized))
     return std::move(E);
 
-  ClassOptions Opts = Deserialized.getOptions();
+  ClassOptions Opts = (ClassOptions)Deserialized.getOptions();
 
   bool ForwardRef = bool(Opts & ClassOptions::ForwardReference);
 
@@ -91,6 +106,10 @@ Expected<TagRecordHash> llvm::pdb::hashTagRecord(const codeview::CVType &Type) {
   case LF_STRUCTURE:
   case LF_INTERFACE:
     return getTagRecordHashForUdt<ClassRecord>(Type);
+  case LF_CLASS2:
+  case LF_STRUCTURE2:
+  case LF_INTERFACE2:
+    return getTagRecordHashForUdt<Class2Record>(Type);
   case LF_UNION:
     return getTagRecordHashForUdt<UnionRecord>(Type);
   case LF_ENUM:
@@ -108,6 +127,10 @@ Expected<uint32_t> llvm::pdb::hashTypeRecord(const CVType &Rec) {
   case LF_STRUCTURE:
   case LF_INTERFACE:
     return getHashForUdt<ClassRecord>(Rec);
+  case LF_CLASS2:
+  case LF_STRUCTURE2:
+  case LF_INTERFACE2:
+    return getHashForUdt<Class2Record>(Rec);
   case LF_UNION:
     return getHashForUdt<UnionRecord>(Rec);
   case LF_ENUM:

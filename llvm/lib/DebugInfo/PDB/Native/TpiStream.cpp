@@ -201,19 +201,40 @@ TpiStream::findFullDeclForForwardRef(TypeIndex ForwardRefTI) const {
       return FullTRH.takeError();
     if (ForwardTRH->FullRecordHash != FullTRH->FullRecordHash)
       continue;
-    TagRecord &ForwardTR = ForwardTRH->getRecord();
-    TagRecord &FullTR = FullTRH->getRecord();
 
-    if (!ForwardTR.hasUniqueName()) {
-      if (ForwardTR.getName() == FullTR.getName())
+    if (ForwardTRH->isTag2Record())
+    {
+      Tag2Record &ForwardTR2 = ForwardTRH->getTag2Record();
+      Tag2Record &FullTR2 = FullTRH->getTag2Record();
+
+        if (!ForwardTR2.hasUniqueName()) {
+        if (ForwardTR2.getName() == FullTR2.getName())
+          return TI;
+        continue;
+      }
+
+      if (!FullTR2.hasUniqueName())
+        continue;
+      if (ForwardTR2.getUniqueName() == FullTR2.getUniqueName())
         return TI;
-      continue;
     }
+    else
+    {
+      TagRecord &ForwardTR = ForwardTRH->getRecord();
+      TagRecord &FullTR = FullTRH->getRecord();
 
-    if (!FullTR.hasUniqueName())
-      continue;
-    if (ForwardTR.getUniqueName() == FullTR.getUniqueName())
-      return TI;
+        if (!ForwardTR.hasUniqueName()) {
+        if (ForwardTR.getName() == FullTR.getName())
+          return TI;
+        continue;
+      }
+
+      if (!FullTR.hasUniqueName())
+        continue;
+      if (ForwardTR.getUniqueName() == FullTR.getUniqueName())
+        return TI;
+    }
+   
   }
   return ForwardRefTI;
 }

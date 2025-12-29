@@ -48,6 +48,9 @@ inline bool isAggregate(CVType CVT) {
   case LF_STRUCTURE:
   case LF_CLASS:
   case LF_INTERFACE:
+  case LF_STRUCTURE2:
+  case LF_CLASS2:
+  case LF_INTERFACE2:
   case LF_UNION:
     return true;
   default:

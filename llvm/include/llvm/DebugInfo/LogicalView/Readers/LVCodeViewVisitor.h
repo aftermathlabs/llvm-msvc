@@ -73,6 +73,7 @@ public:
 
   Error visitKnownRecord(CVType &Record, BuildInfoRecord &Args) override;
   Error visitKnownRecord(CVType &Record, ClassRecord &Class) override;
+  Error visitKnownRecord(CVType &Record, Class2Record &Class) override;
   Error visitKnownRecord(CVType &Record, EnumRecord &Enum) override;
   Error visitKnownRecord(CVType &Record, FuncIdRecord &Func) override;
   Error visitKnownRecord(CVType &Record, ProcedureRecord &Proc) override;
@@ -377,6 +378,8 @@ public:
   Error visitKnownRecord(CVType &Record, BuildInfoRecord &BI, TypeIndex TI,
                          LVElement *Element);
   Error visitKnownRecord(CVType &Record, ClassRecord &Class, TypeIndex TI,
+                         LVElement *Element);
+  Error visitKnownRecord(CVType &Record, Class2Record &Class, TypeIndex TI,
                          LVElement *Element);
   Error visitKnownRecord(CVType &Record, EnumRecord &Enum, TypeIndex TI,
                          LVElement *Element);

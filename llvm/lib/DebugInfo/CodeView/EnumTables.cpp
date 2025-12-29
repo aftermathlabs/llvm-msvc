@@ -327,6 +327,21 @@ static const EnumEntry<uint16_t> ClassOptionNames[] = {
     CV_ENUM_CLASS_ENT(ClassOptions, Intrinsic),
 };
 
+static const EnumEntry<uint32_t> ClassOption2Names[] = {
+    CV_ENUM_CLASS_ENT(ClassOptions2, Packed),
+    CV_ENUM_CLASS_ENT(ClassOptions2, HasConstructorOrDestructor),
+    CV_ENUM_CLASS_ENT(ClassOptions2, HasOverloadedOperator),
+    CV_ENUM_CLASS_ENT(ClassOptions2, Nested),
+    CV_ENUM_CLASS_ENT(ClassOptions2, ContainsNestedClass),
+    CV_ENUM_CLASS_ENT(ClassOptions2, HasOverloadedAssignmentOperator),
+    CV_ENUM_CLASS_ENT(ClassOptions2, HasConversionOperator),
+    CV_ENUM_CLASS_ENT(ClassOptions2, ForwardReference),
+    CV_ENUM_CLASS_ENT(ClassOptions2, Scoped),
+    CV_ENUM_CLASS_ENT(ClassOptions2, HasUniqueName),
+    CV_ENUM_CLASS_ENT(ClassOptions2, Sealed),
+    CV_ENUM_CLASS_ENT(ClassOptions2, Intrinsic),
+};
+
 static const EnumEntry<uint8_t> MemberAccessNames[] = {
     CV_ENUM_CLASS_ENT(MemberAccess, None),
     CV_ENUM_CLASS_ENT(MemberAccess, Private),
@@ -531,6 +546,10 @@ getImageSectionCharacteristicNames() {
 
 ArrayRef<EnumEntry<uint16_t>> getClassOptionNames() {
   return ArrayRef(ClassOptionNames);
+}
+
+ArrayRef<EnumEntry<uint32_t>> getClassOption2Names() {
+  return ArrayRef(ClassOption2Names);
 }
 
 ArrayRef<EnumEntry<uint8_t>> getMemberAccessNames() {

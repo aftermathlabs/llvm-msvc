@@ -21,7 +21,7 @@ template <typename RecordT> static ClassOptions getUdtOptions(CVType CVT) {
     consumeError(std::move(EC));
     return ClassOptions::None;
   }
-  return Record.getOptions();
+  return (ClassOptions)Record.getOptions();
 }
 
 bool llvm::codeview::isUdtForwardRef(CVType CVT) {
@@ -31,6 +31,11 @@ bool llvm::codeview::isUdtForwardRef(CVType CVT) {
   case LF_CLASS:
   case LF_INTERFACE:
     UdtOptions = getUdtOptions<ClassRecord>(std::move(CVT));
+    break;
+  case LF_STRUCTURE2:
+  case LF_CLASS2:
+  case LF_INTERFACE2:
+    UdtOptions = getUdtOptions<Class2Record>(std::move(CVT));
     break;
   case LF_ENUM:
     UdtOptions = getUdtOptions<EnumRecord>(std::move(CVT));
@@ -174,6 +179,10 @@ uint64_t llvm::codeview::getSizeInBytesForTypeRecord(CVType CVT) {
   case LF_CLASS:
   case LF_INTERFACE:
     return getUdtSize<ClassRecord>(std::move(CVT));
+  case LF_STRUCTURE2:
+  case LF_CLASS2:
+  case LF_INTERFACE2:
+    return getUdtSize<Class2Record>(std::move(CVT));
   case LF_UNION:
     return getUdtSize<UnionRecord>(std::move(CVT));
   default:
