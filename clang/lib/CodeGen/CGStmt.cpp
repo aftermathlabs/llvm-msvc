@@ -742,6 +742,31 @@ void CodeGenFunction::EmitGotoStmt(const GotoStmt &S) {
   if (HaveInsertPoint())
     EmitStopPoint(&S);
 
+  // In an outlined SEH __finally helper, goto targets are in the parent
+  // function. Record a bailout request and return; the parent cleanup will
+  // perform the actual jump (threading through any remaining cleanups).
+  if (IsOutlinedSEHHelper && SEHFinallyBailoutKindParent.isValid() &&
+      SEHFinallyBailoutTargetParent.isValid()) {
+    unsigned Code = 0;
+    auto It = SEHFinallyGotoLabelToCode.find(S.getLabel());
+    if (It != SEHFinallyGotoLabelToCode.end())
+      Code = It->second;
+
+    if (Code) {
+      Builder.CreateStore(
+          Builder.getInt8(static_cast<uint8_t>(SEHFinallyBailoutKind::Goto)),
+          SEHFinallyBailoutKindParent);
+      Builder.CreateStore(Builder.getInt32(Code), SEHFinallyBailoutTargetParent);
+      EmitBranchThroughCleanup(ReturnBlock);
+      return;
+    }
+
+    // Unknown label (shouldn't happen): avoid crashing the compiler.
+    Builder.CreateUnreachable();
+    Builder.ClearInsertionPoint();
+    return;
+  }
+
   EmitBranchThroughCleanup(getJumpDestForLabel(S.getLabel()));
 }
 
@@ -1395,6 +1420,19 @@ void CodeGenFunction::EmitDeclStmt(const DeclStmt &S) {
 }
 
 void CodeGenFunction::EmitBreakStmt(const BreakStmt &S) {
+  // In an outlined SEH __finally helper, break targets are in the parent
+  // function. Record a bailout request and return; the parent cleanup will
+  // perform the actual jump.
+  if (IsOutlinedSEHHelper && SEHFinallyBailoutKindParent.isValid() &&
+      SEHFinallyBailoutTargetParent.isValid()) {
+    Builder.CreateStore(
+        Builder.getInt8(static_cast<uint8_t>(SEHFinallyBailoutKind::Break)),
+        SEHFinallyBailoutKindParent);
+    Builder.CreateStore(Builder.getInt32(0), SEHFinallyBailoutTargetParent);
+    EmitBranchThroughCleanup(ReturnBlock);
+    return;
+  }
+
   assert(!BreakContinueStack.empty() && "break stmt not in a loop or switch!");
 
   // If this code is reachable then emit a stop point (if generating
@@ -1407,6 +1445,19 @@ void CodeGenFunction::EmitBreakStmt(const BreakStmt &S) {
 }
 
 void CodeGenFunction::EmitContinueStmt(const ContinueStmt &S) {
+  // In an outlined SEH __finally helper, continue targets are in the parent
+  // function. Record a bailout request and return; the parent cleanup will
+  // perform the actual jump.
+  if (IsOutlinedSEHHelper && SEHFinallyBailoutKindParent.isValid() &&
+      SEHFinallyBailoutTargetParent.isValid()) {
+    Builder.CreateStore(
+        Builder.getInt8(static_cast<uint8_t>(SEHFinallyBailoutKind::Continue)),
+        SEHFinallyBailoutKindParent);
+    Builder.CreateStore(Builder.getInt32(0), SEHFinallyBailoutTargetParent);
+    EmitBranchThroughCleanup(ReturnBlock);
+    return;
+  }
+
   assert(!BreakContinueStack.empty() && "continue stmt not in a loop!");
 
   // If this code is reachable then emit a stop point (if generating

@@ -22,6 +22,7 @@
 #include "clang/AST/StmtVisitor.h"
 #include "clang/Basic/DiagnosticSema.h"
 #include "clang/Basic/TargetBuiltins.h"
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/IR/IntrinsicInst.h"
 #include "llvm/IR/Intrinsics.h"
 #include "llvm/IR/IntrinsicsWebAssembly.h"
@@ -1892,12 +1893,114 @@ struct PerformSEHFinally final : EHScopeStack::Cleanup {
     Args.add(RValue::get(IsForEH), ArgTys[0]);
     Args.add(RValue::get(FP), ArgTys[1]);
 
+    // If this outlined finally helper may record a bailout request, clear the
+    // parent slots before calling it so we only observe requests from this call.
+    auto BailIt = CGF.SEHFinallyBailouts.find(OutlinedFinally);
+    bool HasBailSlots = (BailIt != CGF.SEHFinallyBailouts.end() &&
+                         BailIt->second.KindSlot.isValid() &&
+                         BailIt->second.TargetSlot.isValid());
+    if (HasBailSlots && !F.isForEHCleanup()) {
+      CGF.Builder.CreateStore(CGF.Builder.getInt8(0), BailIt->second.KindSlot);
+      CGF.Builder.CreateStore(CGF.Builder.getInt32(0), BailIt->second.TargetSlot);
+    }
+
     // Arrange a two-arg function info and type.
     const CGFunctionInfo &FnInfo =
         CGM.getTypes().arrangeBuiltinFunctionCall(Context.VoidTy, Args);
 
     auto Callee = CGCallee::forDirect(OutlinedFinally);
     CGF.EmitCall(FnInfo, Callee, ReturnValueSlot(), Args);
+
+    // Handle bailout requests from the outlined finally (break/continue/goto).
+    // Only meaningful for normal cleanups; on EH cleanups, jumping is UB.
+    if (HasBailSlots && !F.isForEHCleanup() && CGF.HaveInsertPoint()) {
+      llvm::Value *KindV = CGF.Builder.CreateLoad(BailIt->second.KindSlot,
+                                                  "seh.finally.bail.kind");
+      llvm::Value *HasBail =
+          CGF.Builder.CreateICmpNE(KindV, CGF.Builder.getInt8(0));
+
+      llvm::BasicBlock *ContBB = CGF.createBasicBlock("seh.finally.bail.cont");
+      llvm::BasicBlock *DispatchBB =
+          CGF.createBasicBlock("seh.finally.bail.dispatch");
+      CGF.Builder.CreateCondBr(HasBail, DispatchBB, ContBB);
+
+      CGF.EmitBlock(DispatchBB);
+
+      llvm::SwitchInst *KindSw = llvm::SwitchInst::Create(
+          KindV, ContBB, /*NumCases=*/3, CGF.Builder.GetInsertBlock());
+
+      auto emitJumpAndClear = [&](CodeGenFunction::JumpDest JD) {
+        // Clear the kind so we don't accidentally re-enter.
+        CGF.Builder.CreateStore(CGF.Builder.getInt8(0), BailIt->second.KindSlot);
+        CGF.EmitBranchThroughCleanup(JD);
+      };
+
+      // continue
+      {
+        llvm::BasicBlock *CaseBB = CGF.createBasicBlock("seh.finally.bail.continue");
+        KindSw->addCase(CGF.Builder.getInt8(
+                            static_cast<uint8_t>(CodeGenFunction::SEHFinallyBailoutKind::Continue)),
+                        CaseBB);
+        CGF.EmitBlock(CaseBB);
+        CodeGenFunction::JumpDest JD;
+        if (CGF.tryGetInnermostContinueDest(JD))
+          emitJumpAndClear(JD);
+        else
+          CGF.Builder.CreateUnreachable();
+        CGF.Builder.ClearInsertionPoint();
+      }
+
+      // break
+      {
+        llvm::BasicBlock *CaseBB = CGF.createBasicBlock("seh.finally.bail.break");
+        KindSw->addCase(CGF.Builder.getInt8(
+                            static_cast<uint8_t>(CodeGenFunction::SEHFinallyBailoutKind::Break)),
+                        CaseBB);
+        CGF.EmitBlock(CaseBB);
+        CodeGenFunction::JumpDest JD;
+        if (CGF.tryGetInnermostBreakDest(JD))
+          emitJumpAndClear(JD);
+        else
+          CGF.Builder.CreateUnreachable();
+        CGF.Builder.ClearInsertionPoint();
+      }
+
+      // goto
+      {
+        llvm::BasicBlock *CaseBB = CGF.createBasicBlock("seh.finally.bail.goto");
+        KindSw->addCase(CGF.Builder.getInt8(
+                            static_cast<uint8_t>(CodeGenFunction::SEHFinallyBailoutKind::Goto)),
+                        CaseBB);
+        CGF.EmitBlock(CaseBB);
+
+        llvm::Value *TargetV = CGF.Builder.CreateLoad(
+            BailIt->second.TargetSlot, "seh.finally.bail.target");
+
+        llvm::BasicBlock *GotoDefault = CGF.createBasicBlock("seh.finally.bail.goto.default");
+        llvm::SwitchInst *GotoSw = llvm::SwitchInst::Create(
+            TargetV, GotoDefault, BailIt->second.GotoLabels.size(),
+            CGF.Builder.GetInsertBlock());
+
+        for (unsigned I = 0, E = BailIt->second.GotoLabels.size(); I != E; ++I) {
+          const LabelDecl *LD = BailIt->second.GotoLabels[I];
+          if (!LD)
+            continue;
+          llvm::BasicBlock *LblBB =
+              CGF.createBasicBlock("seh.finally.bail.goto.case");
+          GotoSw->addCase(CGF.Builder.getInt32(I + 1), LblBB);
+          CGF.EmitBlock(LblBB);
+          CGF.Builder.CreateStore(CGF.Builder.getInt8(0), BailIt->second.KindSlot);
+          CGF.EmitBranchThroughCleanup(CGF.getJumpDestForLabel(LD));
+          CGF.Builder.ClearInsertionPoint();
+        }
+
+        CGF.EmitBlock(GotoDefault);
+        CGF.Builder.CreateUnreachable();
+        CGF.Builder.ClearInsertionPoint();
+      }
+
+      CGF.EmitBlock(ContBB);
+    }
 
     if (F.isForEHCleanup() && RetFromFinally) {
       llvm::BasicBlock *AbnormalCont = CGF.createBasicBlock("if.then");
@@ -2182,6 +2285,15 @@ void CodeGenFunction::EmitCapturedLocals(CodeGenFunction &ParentCGF,
       SEHReturnValue =
           recoverAddrOfEscapedLocal(ParentCGF, ParentSEHRetVal, ParentFP);
   }
+
+  // Recover parent bailout slots for outlined SEH finally helpers.
+  if (!IsFilter && SEHFinallyBailoutKindParentAlloca.isValid() &&
+      SEHFinallyBailoutTargetParentAlloca.isValid()) {
+    SEHFinallyBailoutKindParent = recoverAddrOfEscapedLocal(
+        ParentCGF, SEHFinallyBailoutKindParentAlloca, ParentFP);
+    SEHFinallyBailoutTargetParent = recoverAddrOfEscapedLocal(
+        ParentCGF, SEHFinallyBailoutTargetParentAlloca, ParentFP);
+  }
 }
 
 /// Arrange a function prototype that can be called by Windows exception
@@ -2353,6 +2465,47 @@ void CodeGenFunction::EnterSEHTryStmt(const SEHTryStmt &S,
     ReturnStmtFinder Finder;
     Finder.Visit(Finally);
     ContainsRetStmt = Finder.ContainsRetStmt;
+
+    // Prepare bailout slots for this outlined finally to safely handle
+    // break/continue/goto from within __finally blocks (UB, but should not
+    // crash the compiler).
+    Address BailKind =
+        CreateTempAlloca(Int8Ty, CharUnits::fromQuantity(1), "seh.finally.bail.kind");
+    Address BailTarget =
+        CreateTempAlloca(Int32Ty, getIntAlign(), "seh.finally.bail.target");
+    Builder.CreateStore(Builder.getInt8(0), BailKind);
+    Builder.CreateStore(Builder.getInt32(0), BailTarget);
+
+    // Scan the finally block for gotos so we can assign stable codes.
+    llvm::SmallVector<const LabelDecl *, 4> GotoLabels;
+    llvm::DenseSet<const LabelDecl *> Seen;
+    struct GotoFinder : ConstStmtVisitor<GotoFinder> {
+      llvm::SmallVectorImpl<const LabelDecl *> &Labels;
+      llvm::DenseSet<const LabelDecl *> &Seen;
+      GotoFinder(llvm::SmallVectorImpl<const LabelDecl *> &Labels,
+                 llvm::DenseSet<const LabelDecl *> &Seen)
+          : Labels(Labels), Seen(Seen) {}
+      void Visit(const Stmt *S) {
+        ConstStmtVisitor<GotoFinder>::Visit(S);
+        for (const Stmt *Child : S->children())
+          if (Child)
+            Visit(Child);
+      }
+      void VisitGotoStmt(const GotoStmt *GS) {
+        const LabelDecl *LD = GS->getLabel();
+        if (LD && Seen.insert(LD).second)
+          Labels.push_back(LD);
+      }
+    } GF(GotoLabels, Seen);
+    GF.Visit(Finally->getBlock());
+
+    // Provide the parent allocas and label-code mapping to the helper so it can
+    // write bailout requests.
+    HelperCGF.SEHFinallyBailoutKindParentAlloca = BailKind;
+    HelperCGF.SEHFinallyBailoutTargetParentAlloca = BailTarget;
+    for (unsigned I = 0, E = GotoLabels.size(); I != E; ++I)
+      HelperCGF.SEHFinallyGotoLabelToCode[GotoLabels[I]] = I + 1;
+
     if (ContainsRetStmt) {
       // Suppose we have something like:
       // __try {
@@ -2425,6 +2578,13 @@ void CodeGenFunction::EnterSEHTryStmt(const SEHTryStmt &S,
     // Outline the finally block.
     llvm::Function *FinallyFunc =
         HelperCGF.GenerateSEHFinallyFunction(*this, *Finally);
+
+    // Record bailout info for this outlined helper so the cleanup emission can
+    // perform the actual jump after the helper call.
+    SEHFinallyBailoutInfo &BI = SEHFinallyBailouts[FinallyFunc];
+    BI.KindSlot = BailKind;
+    BI.TargetSlot = BailTarget;
+    BI.GotoLabels = std::move(GotoLabels);
 
     // Push a cleanup for __finally blocks.
     EHStack.pushCleanup<PerformSEHFinally>(NormalAndEHCleanup, FinallyFunc,
