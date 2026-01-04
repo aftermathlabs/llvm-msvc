@@ -625,9 +625,12 @@ void WinException::emitCSpecificHandlerTable(const MachineFunction *MF) {
       // too far.
       //
       // FIXME: Can this overlap with the EH_LABEL for an invoke?
-      auto *Handler = Entry.Handler.get<MachineBasicBlock *>();
-      const MCSymbol *Begin = Handler->getSymbol();
-      emitSEHActionsForRange(FuncInfo, Begin, Begin, Entry.ToState);
+      // Be defensive: some SEH patterns (especially after outlining) may leave
+      // this as an IR basic block or null. Don't crash while emitting asm.
+      if (auto *Handler = Entry.Handler.dyn_cast<MachineBasicBlock *>()) {
+        const MCSymbol *Begin = Handler->getSymbol();
+        emitSEHActionsForRange(FuncInfo, Begin, Begin, Entry.ToState);
+      }
     }
   }
 
@@ -647,19 +650,34 @@ void WinException::emitSEHActionsForRange(const WinEHFuncInfo &FuncInfo,
 
   assert(BeginLabel && EndLabel);
   while (State != -1) {
+    if (State < 0 || static_cast<size_t>(State) >= FuncInfo.SEHUnwindMap.size())
+      return;
     const SEHUnwindMapEntry &UME = FuncInfo.SEHUnwindMap[State];
     const MCExpr *FilterOrFinally;
     const MCExpr *ExceptOrNull;
-    auto *Handler = cast<MachineBasicBlock *>(UME.Handler);
+    const MCSymbol *HandlerSym = nullptr;
+    if (UME.Handler.isNull())
+      return;
+    if (auto *HandlerMBB = UME.Handler.dyn_cast<MachineBasicBlock *>()) {
+      HandlerSym = UME.IsFinally ? getMCSymbolForMBB(Asm, HandlerMBB)
+                                 : HandlerMBB->getSymbol();
+    } else if (const auto *HandlerBB = UME.Handler.dyn_cast<const BasicBlock *>()) {
+      // Fallback: handler lives in a different IR function (e.g. outlined).
+      // Use the parent function symbol. This avoids crashing under /O2 and
+      // keeps the EH table emission conservative.
+      HandlerSym = Asm->getSymbol(HandlerBB->getParent());
+    }
+    if (!HandlerSym)
+      return;
+
     if (UME.IsFinally) {
-      FilterOrFinally = create32bitRef(getMCSymbolForMBB(Asm, Handler));
+      FilterOrFinally = create32bitRef(HandlerSym);
       ExceptOrNull = MCConstantExpr::create(0, Ctx);
     } else {
-      // For an except, the filter can be 1 (catch-all) or a function
-      // label.
+      // For an except, the filter can be 1 (catch-all) or a function label.
       FilterOrFinally = UME.Filter ? create32bitRef(UME.Filter)
                                    : MCConstantExpr::create(1, Ctx);
-      ExceptOrNull = create32bitRef(Handler->getSymbol());
+      ExceptOrNull = create32bitRef(HandlerSym);
     }
 
     AddComment("LabelStart");
@@ -1081,9 +1099,16 @@ void WinException::emitExceptHandlerTable(const MachineFunction *MF) {
 
   assert(!FuncInfo.SEHUnwindMap.empty());
   for (const SEHUnwindMapEntry &UME : FuncInfo.SEHUnwindMap) {
-    auto *Handler = cast<MachineBasicBlock *>(UME.Handler);
-    const MCSymbol *ExceptOrFinally =
-        UME.IsFinally ? getMCSymbolForMBB(Asm, Handler) : Handler->getSymbol();
+    const MCSymbol *ExceptOrFinally = nullptr;
+    if (UME.Handler.isNull())
+      ExceptOrFinally = Asm->getSymbol(&MF->getFunction());
+    if (auto *HandlerMBB = UME.Handler.dyn_cast<MachineBasicBlock *>())
+      ExceptOrFinally = UME.IsFinally ? getMCSymbolForMBB(Asm, HandlerMBB)
+                                      : HandlerMBB->getSymbol();
+    else if (const auto *HandlerBB = UME.Handler.dyn_cast<const BasicBlock *>())
+      ExceptOrFinally = Asm->getSymbol(HandlerBB->getParent());
+    if (!ExceptOrFinally)
+      ExceptOrFinally = Asm->getSymbol(&MF->getFunction());
     // -1 is usually the base state for "unwind to caller", but for
     // _except_handler4 it's -2. Do that replacement here if necessary.
     int ToState = UME.ToState == -1 ? BaseState : UME.ToState;

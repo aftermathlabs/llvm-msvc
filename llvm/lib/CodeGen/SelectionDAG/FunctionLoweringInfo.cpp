@@ -307,8 +307,16 @@ void FunctionLoweringInfo::set(const Function &fn, MachineFunction &mf,
       if (UME.Cleanup)
         UME.Cleanup = MBBMap[cast<const BasicBlock *>(UME.Cleanup)];
     for (SEHUnwindMapEntry &UME : EHInfo.SEHUnwindMap) {
-      const auto *BB = cast<const BasicBlock *>(UME.Handler);
-      UME.Handler = MBBMap[BB];
+      // Most entries refer to a basic block in the current function and must be
+      // mapped to a MachineBasicBlock. However, for some SEH patterns (especially
+      // after outlining/optimization) the handler may belong to a different IR
+      // function. In that case we cannot map it through this function's MBBMap;
+      // keep it as an IR BasicBlock and let the AsmPrinter handle the fallback.
+      if (const auto *BB = dyn_cast<const BasicBlock *>(UME.Handler)) {
+        auto It = MBBMap.find(BB);
+        if (It != MBBMap.end())
+          UME.Handler = It->second;
+      }
     }
     for (ClrEHUnwindMapEntry &CME : EHInfo.ClrEHUnwindMap) {
       const auto *BB = cast<const BasicBlock *>(CME.Handler);
