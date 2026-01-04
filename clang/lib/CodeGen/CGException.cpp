@@ -2390,6 +2390,9 @@ CodeGenFunction::GenerateSEHFinallyFunction(CodeGenFunction &ParentCGF,
   FinishFunction(FinallyBlock->getEndLoc());
 
   CurFn->setSEHFinallyFunction();
+  // Keep SEH finally helpers stable.
+  CurFn->addFnAttr(llvm::Attribute::OptimizeNone);
+  CurFn->addFnAttr(llvm::Attribute::NoInline);
   return CurFn;
 }
 
