@@ -3,7 +3,10 @@ name: macos-arm64-llvm-msvc-build
 permissions:
   contents: write
   
-on: [push, pull_request]
+on:
+  push:
+    tags:
+      - "llvm-msvc-v*.*"
 
 jobs:
   build:
