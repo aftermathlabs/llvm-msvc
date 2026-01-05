@@ -3,10 +3,7 @@ name: windows-wrapper-llvm-msvc-build-PDB
 permissions:
   contents: write
   
-on:
-  push:
-    tags:
-      - "llvm-msvc-v*.*"
+on: [push, pull_request]
 
 jobs:
   build:

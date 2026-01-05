@@ -3,10 +3,7 @@ name: android-ndk-windows-llvm-msvc-PDB.yml
 permissions:
   contents: write
   
-on:
-  push:
-    tags:
-      - "llvm-msvc-v*.*"
+on: [push, pull_request]
 
 jobs:
   build:
