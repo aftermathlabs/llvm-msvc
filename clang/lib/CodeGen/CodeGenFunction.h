@@ -282,6 +282,10 @@ public:
     return Out.isValid();
   }
 
+  /// True if cleanup.dest slot already exists.
+  bool hasNormalCleanupDestSlot() const { return NormalCleanupDest.isValid(); }
+  Address getNormalCleanupDestSlotIfExists() const { return NormalCleanupDest; }
+
   /// Outlined SEH __finally helpers can't directly emit break/continue/goto
   /// because they conceptually jump in the parent function. Instead, the
   /// outlined helper records a "bailout request" into parent allocas and then

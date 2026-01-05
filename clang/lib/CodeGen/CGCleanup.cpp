@@ -1116,6 +1116,10 @@ void CodeGenFunction::EmitBranchThroughCleanup(JumpDest Dest) {
   // If we can't resolve the destination cleanup scope, just add this
   // to the current cleanup scope as a branch fixup.
   if (!Dest.getScopeDepth().isValid()) {
+    // SEH: record the dest index early for forward labels.
+    llvm::ConstantInt *Index = Builder.getInt32(Dest.getDestIndex());
+    createStoreInstBefore(Index, getNormalCleanupDestSlot(), BI);
+
     BranchFixup &Fixup = EHStack.addBranchFixup();
     Fixup.Destination = Dest.getBlock();
     Fixup.DestinationIndex = Dest.getDestIndex();

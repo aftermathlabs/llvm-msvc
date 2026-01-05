@@ -1878,13 +1878,13 @@ struct PerformSEHFinally final : EHScopeStack::Cleanup {
     llvm::Value *IsForEH =
         llvm::ConstantInt::get(CGF.ConvertType(ArgTys[0]), F.isForEHCleanup());
 
-    // Except _leave and fall-through at the end, all other exits in a _try
-    //   (return/goto/continue/break) are considered as abnormal terminations
-    //   since _leave/fall-through is always Indexed 0,
-    //   just use NormalCleanupDestSlot (>= 1 for goto/return/..),
-    //   as 1st Arg to indicate abnormal termination
-    if (!F.isForEHCleanup() && F.hasExitSwitch()) {
-      Address Addr = CGF.getNormalCleanupDestSlot();
+    // SEH: except __leave and fall-through at the end, all other exits in a
+    // __try (return/goto/continue/break) are considered abnormal termination.
+    // We encode this using the cleanup.dest slot:
+    // - 0 for __leave / fall-through
+    // - non-zero for other exits (dest indices)
+    if (!F.isForEHCleanup() && CGF.hasNormalCleanupDestSlot()) {
+      Address Addr = CGF.getNormalCleanupDestSlotIfExists();
       llvm::Value *Load = CGF.Builder.CreateLoad(Addr, "cleanup.dest");
       llvm::Value *Zero = llvm::Constant::getNullValue(CGM.Int32Ty);
       IsForEH = CGF.Builder.CreateICmpNE(Load, Zero);
@@ -1989,8 +1989,12 @@ struct PerformSEHFinally final : EHScopeStack::Cleanup {
               CGF.createBasicBlock("seh.finally.bail.goto.case");
           GotoSw->addCase(CGF.Builder.getInt32(I + 1), LblBB);
           CGF.EmitBlock(LblBB);
+          // Don't branch to the label from inside a cleanup; record dest index.
+          CodeGenFunction::JumpDest JD = CGF.getJumpDestForLabel(LD);
           CGF.Builder.CreateStore(CGF.Builder.getInt8(0), BailIt->second.KindSlot);
-          CGF.EmitBranchThroughCleanup(CGF.getJumpDestForLabel(LD));
+          CGF.Builder.CreateStore(CGF.Builder.getInt32(JD.getDestIndex()),
+                                  CGF.getNormalCleanupDestSlot());
+          CGF.Builder.CreateBr(ContBB);
           CGF.Builder.ClearInsertionPoint();
         }
 
@@ -2010,6 +2014,10 @@ struct PerformSEHFinally final : EHScopeStack::Cleanup {
 
         CodeGenFunction::JumpDest JD;
         if (CGF.tryGetInnermostSEHLeaveDest(JD)) {
+          // __leave is not abnormal; clear cleanup.dest when it exists.
+          if (CGF.hasNormalCleanupDestSlot())
+            CGF.Builder.CreateStore(CGF.Builder.getInt32(0),
+                                    CGF.getNormalCleanupDestSlotIfExists());
           CGF.Builder.CreateStore(CGF.Builder.getInt8(0), BailIt->second.KindSlot);
           CGF.EmitBranchThroughCleanup(JD);
         } else {
@@ -2803,5 +2811,8 @@ void CodeGenFunction::EmitSEHLeaveStmt(const SEHLeaveStmt &S) {
     return;
   }
 
+  // __leave is not abnormal; clear cleanup.dest when it exists.
+  if (hasNormalCleanupDestSlot())
+    Builder.CreateStore(Builder.getInt32(0), getNormalCleanupDestSlotIfExists());
   EmitBranchThroughCleanup(*SEHTryEpilogueStack.back());
 }
