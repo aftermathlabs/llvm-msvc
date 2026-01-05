@@ -275,6 +275,13 @@ public:
     return Out.isValid();
   }
 
+  bool tryGetInnermostSEHLeaveDest(JumpDest &Out) const {
+    if (SEHTryEpilogueStack.empty() || !SEHTryEpilogueStack.back())
+      return false;
+    Out = *SEHTryEpilogueStack.back();
+    return Out.isValid();
+  }
+
   /// Outlined SEH __finally helpers can't directly emit break/continue/goto
   /// because they conceptually jump in the parent function. Instead, the
   /// outlined helper records a "bailout request" into parent allocas and then
@@ -285,6 +292,7 @@ public:
     Break = 1,
     Continue = 2,
     Goto = 3,
+    Leave = 4,
   };
 
   struct SEHFinallyBailoutInfo {

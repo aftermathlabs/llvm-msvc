@@ -1999,6 +1999,27 @@ struct PerformSEHFinally final : EHScopeStack::Cleanup {
         CGF.Builder.ClearInsertionPoint();
       }
 
+      // __leave
+      {
+        llvm::BasicBlock *CaseBB = CGF.createBasicBlock("seh.finally.bail.leave");
+        KindSw->addCase(
+            CGF.Builder.getInt8(static_cast<uint8_t>(
+                CodeGenFunction::SEHFinallyBailoutKind::Leave)),
+            CaseBB);
+        CGF.EmitBlock(CaseBB);
+
+        CodeGenFunction::JumpDest JD;
+        if (CGF.tryGetInnermostSEHLeaveDest(JD)) {
+          CGF.Builder.CreateStore(CGF.Builder.getInt8(0), BailIt->second.KindSlot);
+          CGF.EmitBranchThroughCleanup(JD);
+        } else {
+          // Not in an SEH try scope (shouldn't happen here). Don't crash.
+          CGF.Builder.CreateUnreachable();
+          CGF.Builder.ClearInsertionPoint();
+        }
+        CGF.Builder.ClearInsertionPoint();
+      }
+
       CGF.EmitBlock(ContBB);
     }
 
@@ -2762,8 +2783,20 @@ void CodeGenFunction::EmitSEHLeaveStmt(const SEHLeaveStmt &S) {
   if (HaveInsertPoint())
     EmitStopPoint(&S);
 
-  // This must be a __leave from a __finally block, which we warn on and is UB.
-  // Just emit unreachable.
+  // In outlined SEH __finally helpers, __leave targets the parent function.
+  // Record a bailout request and return; the parent cleanup will perform the
+  // actual leave (threading through any remaining cleanups).
+  if (IsOutlinedSEHHelper && SEHFinallyBailoutKindParent.isValid() &&
+      SEHFinallyBailoutTargetParent.isValid()) {
+    Builder.CreateStore(
+        Builder.getInt8(static_cast<uint8_t>(SEHFinallyBailoutKind::Leave)),
+        SEHFinallyBailoutKindParent);
+    Builder.CreateStore(Builder.getInt32(0), SEHFinallyBailoutTargetParent);
+    EmitBranchThroughCleanup(ReturnBlock);
+    return;
+  }
+
+  // Otherwise, this must be a __leave from within a __try scope.
   if (!isSEHTryScope()) {
     Builder.CreateUnreachable();
     Builder.ClearInsertionPoint();
