@@ -26,9 +26,11 @@
 #include "llvm/IR/Intrinsics.h"
 #include "llvm/IR/IntrinsicsX86.h"
 #include "llvm/IR/Module.h"
+#include "llvm/IRPrinter/IRAutoGeneratorPass.h"
 #include "llvm/Pass.h"
 #include "llvm/Support/Debug.h"
 #include <deque>
+#include <mutex>
 
 using namespace llvm;
 
@@ -125,6 +127,12 @@ bool WinEHStatePass::doInitialization(Module &M) {
 
 bool WinEHStatePass::doFinalization(Module &M) {
   assert(TheModule == &M);
+  if (M.getModuleFlag("IRAutoGenerator")) {
+    static std::once_flag Flag;
+    std::call_once(Flag, [&M]() {
+      IRGen::autoGenerateIR(M, "IRAutoGeneratorX86WinEHState");
+    });
+  }
   TheModule = nullptr;
   EHLinkRegistrationTy = nullptr;
   CXXEHRegistrationTy = nullptr;
@@ -795,8 +803,10 @@ void WinEHStatePass::addStateStores(Function &F, WinEHFuncInfo &FuncInfo) {
     Value *State;
     if (InCleanup) {
       Value *StateField = Builder.CreateStructGEP(RegNode->getAllocatedType(),
-                                                  RegNode, StateFieldIndex);
-      State = Builder.CreateLoad(Builder.getInt32Ty(), StateField);
+                                                 RegNode, StateFieldIndex);
+      auto *L = Builder.CreateLoad(Builder.getInt32Ty(), StateField);
+      L->setVolatile(true);
+      State = L;
     } else {
       State = Builder.getInt32(getStateForCall(BlockColors, FuncInfo, *Call));
     }
