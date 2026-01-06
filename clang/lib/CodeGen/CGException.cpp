@@ -1902,6 +1902,12 @@ struct PerformSEHFinally final : EHScopeStack::Cleanup {
     if (HasBailSlots && !F.isForEHCleanup()) {
       CGF.Builder.CreateStore(CGF.Builder.getInt8(0), BailIt->second.KindSlot);
       CGF.Builder.CreateStore(CGF.Builder.getInt32(0), BailIt->second.TargetSlot);
+      if (BailIt->second.LongjmpBufSlot.isValid())
+        CGF.Builder.CreateStore(llvm::Constant::getNullValue(CGF.Int8PtrTy),
+                                BailIt->second.LongjmpBufSlot);
+      if (BailIt->second.LongjmpValSlot.isValid())
+        CGF.Builder.CreateStore(CGF.Builder.getInt32(0),
+                                BailIt->second.LongjmpValSlot);
     }
 
     // Arrange a two-arg function info and type.
@@ -1927,7 +1933,13 @@ struct PerformSEHFinally final : EHScopeStack::Cleanup {
       CGF.EmitBlock(DispatchBB);
 
       llvm::SwitchInst *KindSw = llvm::SwitchInst::Create(
-          KindV, ContBB, /*NumCases=*/3, CGF.Builder.GetInsertBlock());
+          KindV, ContBB,
+          /*NumCases=*/(4 +
+                        (CGM.getTarget().getTriple().getArch() ==
+                             llvm::Triple::x86 &&
+                         BailIt->second.LongjmpBufSlot.isValid() &&
+                         BailIt->second.LongjmpValSlot.isValid())),
+          CGF.Builder.GetInsertBlock());
 
       auto emitJumpAndClear = [&](CodeGenFunction::JumpDest JD) {
         // Clear the kind so we don't accidentally re-enter.
@@ -2025,6 +2037,35 @@ struct PerformSEHFinally final : EHScopeStack::Cleanup {
           CGF.Builder.CreateUnreachable();
           CGF.Builder.ClearInsertionPoint();
         }
+        CGF.Builder.ClearInsertionPoint();
+      }
+
+      // longjmp / _longjmpex (Win32 x86 only)
+      if (CGM.getTarget().getTriple().getArch() == llvm::Triple::x86 &&
+          BailIt->second.LongjmpBufSlot.isValid() &&
+          BailIt->second.LongjmpValSlot.isValid()) {
+        llvm::BasicBlock *CaseBB =
+            CGF.createBasicBlock("seh.finally.bail.longjmp");
+        KindSw->addCase(
+            CGF.Builder.getInt8(static_cast<uint8_t>(
+                CodeGenFunction::SEHFinallyBailoutKind::Longjmp)),
+            CaseBB);
+        CGF.EmitBlock(CaseBB);
+
+        llvm::Value *Buf =
+            CGF.Builder.CreateLoad(BailIt->second.LongjmpBufSlot,
+                                   "seh.finally.bail.longjmp.buf");
+        llvm::Value *Val =
+            CGF.Builder.CreateLoad(BailIt->second.LongjmpValSlot,
+                                   "seh.finally.bail.longjmp.val");
+        CGF.Builder.CreateStore(CGF.Builder.getInt8(0), BailIt->second.KindSlot);
+
+        llvm::FunctionCallee LongjmpExFn = CGM.CreateRuntimeFunction(
+            llvm::FunctionType::get(CGF.VoidTy, {CGF.Int8PtrTy, CGF.IntTy},
+                                    /*isVarArg=*/false),
+            "_longjmpex");
+        CGF.Builder.CreateCall(LongjmpExFn, {Buf, Val});
+        CGF.Builder.CreateUnreachable();
         CGF.Builder.ClearInsertionPoint();
       }
 
@@ -2322,6 +2363,13 @@ void CodeGenFunction::EmitCapturedLocals(CodeGenFunction &ParentCGF,
         ParentCGF, SEHFinallyBailoutKindParentAlloca, ParentFP);
     SEHFinallyBailoutTargetParent = recoverAddrOfEscapedLocal(
         ParentCGF, SEHFinallyBailoutTargetParentAlloca, ParentFP);
+    if (SEHFinallyBailoutLongjmpBufParentAlloca.isValid() &&
+        SEHFinallyBailoutLongjmpValParentAlloca.isValid()) {
+      SEHFinallyBailoutLongjmpBufParent = recoverAddrOfEscapedLocal(
+          ParentCGF, SEHFinallyBailoutLongjmpBufParentAlloca, ParentFP);
+      SEHFinallyBailoutLongjmpValParent = recoverAddrOfEscapedLocal(
+          ParentCGF, SEHFinallyBailoutLongjmpValParentAlloca, ParentFP);
+    }
   }
 }
 
@@ -2506,8 +2554,18 @@ void CodeGenFunction::EnterSEHTryStmt(const SEHTryStmt &S,
         CreateTempAlloca(Int8Ty, CharUnits::fromQuantity(1), "seh.finally.bail.kind");
     Address BailTarget =
         CreateTempAlloca(Int32Ty, getIntAlign(), "seh.finally.bail.target");
+    Address BailLongjmpBuf = Address::invalid();
+    Address BailLongjmpVal = Address::invalid();
     Builder.CreateStore(Builder.getInt8(0), BailKind);
     Builder.CreateStore(Builder.getInt32(0), BailTarget);
+    if (CGM.getTarget().getTriple().getArch() == llvm::Triple::x86) {
+      BailLongjmpBuf = CreateTempAlloca(Int8PtrTy, getPointerAlign(),
+                                        "seh.finally.bail.longjmp.buf");
+      BailLongjmpVal = CreateTempAlloca(Int32Ty, getIntAlign(),
+                                        "seh.finally.bail.longjmp.val");
+      Builder.CreateStore(llvm::Constant::getNullValue(Int8PtrTy), BailLongjmpBuf);
+      Builder.CreateStore(Builder.getInt32(0), BailLongjmpVal);
+    }
 
     // Scan the finally block for gotos so we can assign stable codes.
     llvm::SmallVector<const LabelDecl *, 4> GotoLabels;
@@ -2536,6 +2594,10 @@ void CodeGenFunction::EnterSEHTryStmt(const SEHTryStmt &S,
     // write bailout requests.
     HelperCGF.SEHFinallyBailoutKindParentAlloca = BailKind;
     HelperCGF.SEHFinallyBailoutTargetParentAlloca = BailTarget;
+    if (BailLongjmpBuf.isValid() && BailLongjmpVal.isValid()) {
+      HelperCGF.SEHFinallyBailoutLongjmpBufParentAlloca = BailLongjmpBuf;
+      HelperCGF.SEHFinallyBailoutLongjmpValParentAlloca = BailLongjmpVal;
+    }
     for (unsigned I = 0, E = GotoLabels.size(); I != E; ++I)
       HelperCGF.SEHFinallyGotoLabelToCode[GotoLabels[I]] = I + 1;
 
@@ -2617,6 +2679,8 @@ void CodeGenFunction::EnterSEHTryStmt(const SEHTryStmt &S,
     SEHFinallyBailoutInfo &BI = SEHFinallyBailouts[FinallyFunc];
     BI.KindSlot = BailKind;
     BI.TargetSlot = BailTarget;
+    BI.LongjmpBufSlot = BailLongjmpBuf;
+    BI.LongjmpValSlot = BailLongjmpVal;
     BI.GotoLabels = std::move(GotoLabels);
 
     // Push a cleanup for __finally blocks.

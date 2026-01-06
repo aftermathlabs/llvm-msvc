@@ -5089,6 +5089,37 @@ RValue CodeGenFunction::EmitCallExpr(const CallExpr *E,
     return EmitCXXPseudoDestructorExpr(callee.getPseudoDestructorExpr());
   }
 
+  // If we're in an outlined SEH finally helper, some "control-transfer" calls
+  // (like longjmp) must be executed in the parent function frame. Executing
+  // them directly in the helper can bypass the parent's SEH try/finally.
+  if (IsOutlinedSEHHelper && SEHFinallyBailoutKindParent.isValid() &&
+      SEHFinallyBailoutTargetParent.isValid() &&
+      SEHFinallyBailoutLongjmpBufParent.isValid() &&
+      SEHFinallyBailoutLongjmpValParent.isValid()) {
+    if (callee.isOrdinary()) {
+      llvm::Value *FnPtr = callee.getFunctionPointer();
+      if (auto *Fn = dyn_cast<llvm::Function>(FnPtr->stripPointerCasts())) {
+        if (Fn->getName() == "_longjmpex") {
+          llvm::Value *BufV = EmitScalarExpr(E->getArg(0));
+          BufV = Builder.CreateBitCast(BufV, Int8PtrTy);
+          llvm::Value *ValV = EmitScalarExpr(E->getArg(1));
+          ValV = Builder.CreateIntCast(ValV, IntTy, /*isSigned=*/true);
+
+          Builder.CreateStore(
+              Builder.getInt8(static_cast<uint8_t>(
+                  SEHFinallyBailoutKind::Longjmp)),
+              SEHFinallyBailoutKindParent);
+          Builder.CreateStore(BufV, SEHFinallyBailoutLongjmpBufParent);
+          Builder.CreateStore(ValV, SEHFinallyBailoutLongjmpValParent);
+          EmitBranchThroughCleanup(ReturnBlock);
+          // EmitBranchThroughCleanup clears the insertion point.
+          EnsureInsertPoint();
+          return RValue::get(nullptr);
+        }
+      }
+    }
+  }
+
   return EmitCall(E->getCallee()->getType(), callee, E, ReturnValue);
 }
 

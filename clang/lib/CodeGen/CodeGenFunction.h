@@ -297,11 +297,14 @@ public:
     Continue = 2,
     Goto = 3,
     Leave = 4,
+    Longjmp = 5,
   };
 
   struct SEHFinallyBailoutInfo {
     Address KindSlot = Address::invalid();   // i8
     Address TargetSlot = Address::invalid(); // i32 (label code for goto)
+    Address LongjmpBufSlot = Address::invalid(); // i8*
+    Address LongjmpValSlot = Address::invalid(); // i32
     llvm::SmallVector<const LabelDecl *, 4> GotoLabels; // code: 1..N
   };
 
@@ -313,10 +316,14 @@ public:
   /// helper via llvm.localrecover.
   Address SEHFinallyBailoutKindParentAlloca = Address::invalid();
   Address SEHFinallyBailoutTargetParentAlloca = Address::invalid();
+  Address SEHFinallyBailoutLongjmpBufParentAlloca = Address::invalid();
+  Address SEHFinallyBailoutLongjmpValParentAlloca = Address::invalid();
 
   /// Recovered addresses inside an outlined SEH finally helper.
   Address SEHFinallyBailoutKindParent = Address::invalid();
   Address SEHFinallyBailoutTargetParent = Address::invalid();
+  Address SEHFinallyBailoutLongjmpBufParent = Address::invalid();
+  Address SEHFinallyBailoutLongjmpValParent = Address::invalid();
 
   /// CodeGen-time mapping used only while emitting an outlined SEH finally
   /// helper: LabelDecl* -> small integer code stored in TargetSlot.
