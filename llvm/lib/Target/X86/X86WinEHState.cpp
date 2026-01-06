@@ -765,7 +765,7 @@ void WinEHStatePass::addStateStores(Function &F, WinEHFuncInfo &FuncInfo) {
       if (BlockToState != FuncInfo.BlockToStateMap.end()) {
         int State = BlockToState->second;
         if (State != PrevState)
-          insertStateNumberStore(BB->getFirstNonPHI(), State);
+          insertStateNumberStore(FirstNonPHI, State);
         PrevState = State;
       }
     }
