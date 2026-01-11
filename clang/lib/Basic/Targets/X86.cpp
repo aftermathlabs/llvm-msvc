@@ -114,7 +114,7 @@ bool X86TargetInfo::initFeatureMap(
   using namespace llvm::X86;
 
   SmallVector<StringRef, 16> CPUFeatures;
-  getFeaturesForCPU(CPU, CPUFeatures);
+  getFeaturesForCPU(CPU, CPUFeatures, /*NeedPlus=*/false, getTriple());
   for (auto &F : CPUFeatures)
     setFeatureEnabled(Features, F, true);
 
@@ -1327,7 +1327,8 @@ char X86TargetInfo::CPUSpecificManglingCharacter(StringRef Name) const {
 void X86TargetInfo::getCPUSpecificCPUDispatchFeatures(
     StringRef Name, llvm::SmallVectorImpl<StringRef> &Features) const {
   SmallVector<StringRef, 32> TargetCPUFeatures;
-  llvm::X86::getFeaturesForCPU(Name, TargetCPUFeatures, true);
+  llvm::X86::getFeaturesForCPU(Name, TargetCPUFeatures, /*NeedPlus=*/true,
+                               getTriple());
   for (auto &F : TargetCPUFeatures)
     Features.push_back(F);
 }

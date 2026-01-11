@@ -13,6 +13,8 @@
 #include "llvm/TargetParser/X86TargetParser.h"
 #include "llvm/ADT/Bitset.h"
 #include "llvm/ADT/StringSwitch.h"
+#include "llvm/ADT/Triple.h"
+#include "llvm/Support/Host.h"
 #include <numeric>
 
 using namespace llvm;
@@ -642,6 +644,14 @@ constexpr FeatureInfo FeatureInfos[X86::CPU_FEATURE_MAX] = {
 void llvm::X86::getFeaturesForCPU(StringRef CPU,
                                   SmallVectorImpl<StringRef> &EnabledFeatures,
                                   bool NeedPlus) {
+  llvm::Triple HostTriple(llvm::sys::getDefaultTargetTriple());
+  getFeaturesForCPU(CPU, EnabledFeatures, NeedPlus, HostTriple);
+}
+
+void llvm::X86::getFeaturesForCPU(StringRef CPU,
+                                  SmallVectorImpl<StringRef> &EnabledFeatures,
+                                  bool NeedPlus,
+                                  const llvm::Triple &TargetTriple) {
   auto I = llvm::find_if(Processors,
                          [&](const ProcInfo &P) { return P.Name == CPU; });
   assert(I != std::end(Processors) && "Processor not found!");
@@ -652,15 +662,15 @@ void llvm::X86::getFeaturesForCPU(StringRef CPU,
   // be used with 64-bit mode.
   Bits &= ~Feature64BIT;
   // [MSVC Compatibility]
-#ifdef _WIN32
-  // Matches Microsoft's default support.
-  Bits |= FeatureSSE3;
-  Bits |= FeatureSSE4_1;
-  Bits |= FeatureSSE4_2;
-  Bits |= FeatureINVPCID;
-  Bits |= FeatureRTM;
-  Bits |= FeatureFSGSBASE;
-#endif
+  if (TargetTriple.isOSWindows()) {
+    // Matches Microsoft's default support.
+    Bits |= FeatureSSE3;
+    Bits |= FeatureSSE4_1;
+    Bits |= FeatureSSE4_2;
+    Bits |= FeatureINVPCID;
+    Bits |= FeatureRTM;
+    Bits |= FeatureFSGSBASE;
+  }
   // Add the string version of all set bits.
   for (unsigned i = 0; i != CPU_FEATURE_MAX; ++i)
     if (Bits[i] && !FeatureInfos[i].getName(NeedPlus).empty())

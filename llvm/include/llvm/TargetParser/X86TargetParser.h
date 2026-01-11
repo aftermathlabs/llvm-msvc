@@ -20,6 +20,7 @@
 namespace llvm {
 template <typename T> class SmallVectorImpl;
 class StringRef;
+class Triple;
 
 namespace X86 {
 
@@ -169,6 +170,10 @@ ProcessorFeatures getKeyFeature(CPUKind Kind);
 /// "+" will be append in front of each feature if NeedPlus is true.
 void getFeaturesForCPU(StringRef CPU, SmallVectorImpl<StringRef> &Features,
                        bool NeedPlus = false);
+/// Fill in the features that \p CPU supports into \p Features, taking the
+/// target platform into account.
+void getFeaturesForCPU(StringRef CPU, SmallVectorImpl<StringRef> &Features,
+                       bool NeedPlus, const Triple &TargetTriple);
 
 /// Set or clear entries in \p Features that are implied to be enabled/disabled
 /// by the provided \p Feature.
