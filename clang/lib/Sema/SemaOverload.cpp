@@ -1784,6 +1784,13 @@ bool Sema::IsFunctionConversion(QualType FromType, QualType ToType,
     Changed = true;
   }
 
+  // [MSVC compatibility]: treat noreturn as not affecting function pointer type.
+  if (getLangOpts().MSVCCompat && !FromEInfo.getNoReturn() &&
+      ToEInfo.getNoReturn()) {
+    FromFn = Context.adjustFunctionType(FromFn, FromEInfo.withNoReturn(true));
+    Changed = true;
+  }
+
   // Drop the 'arm_preserves_za' if not present in the target type (we can do
   // that because it is merely a hint).
   if (const auto *FromFPT = dyn_cast<FunctionProtoType>(FromFn)) {
