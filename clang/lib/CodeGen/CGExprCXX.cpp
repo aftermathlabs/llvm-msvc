@@ -220,7 +220,7 @@ RValue CodeGenFunction::EmitCXXMemberOrOperatorMemberCallExpr(
 
   // Compute the object pointer.
   bool CanUseVirtualCall = MD->isVirtual() && !HasQualifier;
-//#ifdef _WIN32
+#ifdef _WIN32
   if (CanUseVirtualCall && Base->isImplicitCXXThis()) {
     // [MSVC Compatibility]
     if (CurFuncDecl && (CurFuncDecl->getKind() == Decl::CXXConstructor) &&
@@ -232,7 +232,7 @@ RValue CodeGenFunction::EmitCXXMemberOrOperatorMemberCallExpr(
       }
     }
   }
-// #endif
+#endif
   const CXXMethodDecl *DevirtualizedMethod = nullptr;
   if (CanUseVirtualCall &&
       MD->getDevirtualizedMethod(Base, getLangOpts().AppleKext)) {

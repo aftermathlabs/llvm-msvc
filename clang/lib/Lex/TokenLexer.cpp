@@ -410,11 +410,11 @@ void TokenLexer::ExpandFunctionArguments() {
     bool PasteAfter = I+1 != E && Tokens[I+1].is(tok::hashhash);
     bool RParenAfter = I+1 != E && Tokens[I+1].is(tok::r_paren);
     // [MSVC Compatibility] We allow pre-expand 'major' in (0x##major) 
-//#ifdef _WIN32
+#ifdef _WIN32
     bool NumericConstantBeforeHashHash =
         (I >= 2) && Tokens[I - 1].is(tok::hashhash) &&
         Tokens[I - 2].is(tok::numeric_constant);
-// #endif
+#endif
     assert((!NonEmptyPasteBefore || PasteBefore || VCtx.isInVAOpt()) &&
            "unexpected ## in ResultToks");
 
@@ -454,13 +454,13 @@ void TokenLexer::ExpandFunctionArguments() {
     // C99 6.10.3.1p1.
     // [MSVC Compatibility] We allow pre-expand 'major' in (0x##major) 
     bool GotoPreExpand = !PasteBefore && !PasteAfter;
-//#ifdef _WIN32
+#ifdef _WIN32
     if (!GotoPreExpand) {
       if (NumericConstantBeforeHashHash) {
         GotoPreExpand = true;
       }
     }
-// #endif
+#endif
     if (GotoPreExpand) {
       const Token *ResultArgToks;
 
@@ -816,7 +816,7 @@ bool TokenLexer::pasteTokens(Token &LHSTok, ArrayRef<Token> TokenStream,
 
     // Lex the resultant pasted token into Result.
     Token Result;
-//#ifdef _WIN32
+#ifdef _WIN32
     // [MSVC Compatibility] Handle "__FUNCTION__"##"string"
     if (LHSTok.is(tok::kw___FUNCTION__) && RHS.is(tok::string_literal)) {
       // Returns false because we need to analyze later. 
@@ -833,7 +833,7 @@ bool TokenLexer::pasteTokens(Token &LHSTok, ArrayRef<Token> TokenStream,
       // Returns true the caller should immediately return the token.
       return true;
     }
-// #endif
+#endif
     if (LHSTok.isAnyIdentifier() && RHS.isAnyIdentifier()) {
       // Common paste case: identifier+identifier = identifier.  Avoid creating
       // a lexer and other overhead.
@@ -877,7 +877,7 @@ bool TokenLexer::pasteTokens(Token &LHSTok, ArrayRef<Token> TokenStream,
       // error.  This occurs with "x ## +"  and other stuff.  Return with LHSTok
       // unmodified and with RHS as the next token to lex.
       if (isInvalid) {
-//#ifdef _WIN32
+#ifdef _WIN32
         // It's OK on windows
         if (LHSTok.is(tok::amp))
           return true;
@@ -887,7 +887,7 @@ bool TokenLexer::pasteTokens(Token &LHSTok, ArrayRef<Token> TokenStream,
           //  Returns false because we need to analyze later.
           return false;
         }
-// #endif
+#endif
         // Explicitly convert the token location to have proper expansion
         // information so that the user knows where it came from.
         SourceManager &SM = PP.getSourceManager();

@@ -339,12 +339,12 @@ static IdentifierInfo *RegisterBuiltinMacro(Preprocessor &PP, const char *Name){
 /// identifier table.
 void Preprocessor::RegisterBuiltinMacros() {
   //[MSVC Compatibility]
-//#ifdef _WIN32
+#ifdef _WIN32
   Ident__FUNCTION__ = RegisterBuiltinMacro(*this, "__FUNCTION__");
   Ident__LINE__ = RegisterBuiltinMacro(*this, "__LINE__");
-// #else
-//   Ident__FUNCTION__ = Ident__LINE__ = RegisterBuiltinMacro(*this, "__LINE__");
-// #endif
+#else
+  Ident__FUNCTION__ = Ident__LINE__ = RegisterBuiltinMacro(*this, "__LINE__");
+#endif
   Ident__RANDOM__NUMERIC__ = RegisterBuiltinMacro(*this, "__RANDOM__NUMERIC__");
   Ident__FILE__ = RegisterBuiltinMacro(*this, "__FILE__");
   Ident__DATE__ = RegisterBuiltinMacro(*this, "__DATE__");
@@ -931,13 +931,13 @@ MacroArgs *Preprocessor::ReadMacroCallArgumentList(Token &MacroName,
   // an error.
   if (!isVariadic && NumActuals > MinArgsExpected &&
       !ContainsCodeCompletionTok) {
-//#ifdef _WIN32
+#ifdef _WIN32
     // [MSVC Compatibility]
     // MSVC discards redundant args and warns about it.
     Diag(TooManyArgsLoc, diag::ext_too_many_args_in_macro_invoc_msvc)
         << MacroName.getIdentifierInfo();
     NumActuals = MinArgsExpected;
-// #else
+#else
     // Emit the diagnostic at the macro name in case there is a missing ).
     // Emitting it at the , could be far away from the macro name.
     Diag(TooManyArgsLoc, diag::err_too_many_args_in_macro_invoc);
@@ -1594,7 +1594,7 @@ void Preprocessor::ExpandBuiltinMacro(Token &Tok) {
         FN += PLoc.getFilename();
         processPathForFileMacro(FN, getLangOpts(), getTargetInfo());
         //[MSVC Compalibility] Use file name and line to replace '__FUNCTION__'
-//#ifdef _WIN32
+#ifdef _WIN32
         if (II == Ident__FUNCTION__) {
           SmallString<256> FNTemp =
               llvm::MSVCMacroRebuildingPass::get__FUNCTION__MarkerName();
@@ -1604,7 +1604,7 @@ void Preprocessor::ExpandBuiltinMacro(Token &Tok) {
           FNTemp += ")";
           FN = FNTemp;
         }
-// #endif
+#endif
       }
       Lexer::Stringify(FN);
       OS << '"' << FN << '"';
