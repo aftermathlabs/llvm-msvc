@@ -10410,9 +10410,9 @@ void Sema::NoteHiddenVirtualMethods(CXXMethodDecl *MD,
 /// without overriding any.
 void Sema::DiagnoseHiddenVirtualMethods(CXXMethodDecl *MD) {
   // There is no need to display it on Windows.
-#ifdef _WIN32
+//#ifdef _WIN32
   return;
-#endif
+// #endif
 
   // Don't diagnose hidden virtual methods in Microsoft extensions mode.
   if (getLangOpts().MicrosoftExt)

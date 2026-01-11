@@ -129,10 +129,10 @@ void clang::ProcessWarningOptions(DiagnosticsEngine &Diags,
       // table. It also has the "specifier" form of -Werror=foo. GCC supports
       // the deprecated -Werror-implicit-function-declaration which is used by
       // a few projects.
-#ifdef _WIN32
+// #ifdef _WIN32
       if (Opt == "error")
         isPositive = false;
-#endif
+// #endif
       if (Diags.TreatWarningsAsErrors) {
         isPositive = true;
         Diags.setWarningsAsErrors(isPositive);

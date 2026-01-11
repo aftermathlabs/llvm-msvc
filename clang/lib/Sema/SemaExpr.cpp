@@ -157,9 +157,9 @@ static bool hasAnyExplicitStorageClass(const FunctionDecl *D) {
 static void diagnoseUseOfInternalDeclInInlineFunction(Sema &S,
                                                       const NamedDecl *D,
                                                       SourceLocation Loc) {
-#ifdef _WIN32
+//#ifdef _WIN32
   return;
-#endif
+// #endif
   // This is disabled under C++; there are too many ways for this to fire in
   // contexts where the warning is a false positive, or where it is technically
   // correct but benign.
@@ -19180,9 +19180,9 @@ void Sema::MarkFunctionReferenced(SourceLocation Loc, FunctionDecl *Func,
         UndefinedButUsed.insert(std::make_pair(Func->getCanonicalDecl(), Loc));
       else if (Func->getMostRecentDecl()->isInlined() && !LangOpts.GNUInline &&
                !Func->getMostRecentDecl()->hasAttr<GNUInlineAttr>()) {
-#ifdef _WIN32
+//#ifdef _WIN32
         Func->getMostRecentDecl()->setImplicitlyInline(false);
-#endif
+//#endif
         UndefinedButUsed.insert(std::make_pair(Func->getCanonicalDecl(), Loc));
       }
       else if (isExternalWithNoLinkageType(Func))
@@ -19211,7 +19211,7 @@ void Sema::MarkFunctionReferenced(SourceLocation Loc, FunctionDecl *Func,
 
     Func->markUsed(Context);
   }
-#ifdef _WIN32
+//#ifdef _WIN32
   // If the function is inlined in the most recent declaration but not in the
   // first declaration, then the function is implicitly inlined. This can happen
   // when a function is not declared inline in a header file and then defined in a
@@ -19223,7 +19223,7 @@ void Sema::MarkFunctionReferenced(SourceLocation Loc, FunctionDecl *Func,
       !Func->getFirstDecl()->isInlined()) {
     Func->getMostRecentDecl()->setImplicitlyInline(false);
   }
-#endif
+//#endif
 }
 
 /// Directly mark a variable odr-used. Given a choice, prefer to use

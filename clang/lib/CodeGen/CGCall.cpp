@@ -1901,12 +1901,12 @@ static void getTrivialDefaultFunctionAttributes(
     if (CodeGenOpts.LessPreciseFPMAD)
       FuncAttrs.addAttribute("less-precise-fpmad", "true");
 
-#ifdef _WIN32
+//#ifdef _WIN32
     FuncAttrs.addAttribute(llvm::Attribute::NullPointerIsValid);
-#else
-    if (CodeGenOpts.NullPointerIsValid)
-      FuncAttrs.addAttribute(llvm::Attribute::NullPointerIsValid);
-#endif
+// #else
+//     if (CodeGenOpts.NullPointerIsValid)
+//       FuncAttrs.addAttribute(llvm::Attribute::NullPointerIsValid);
+// #endif
 
     if (LangOpts.getDefaultExceptionMode() == LangOptions::FPE_Ignore)
       FuncAttrs.addAttribute("no-trapping-math", "true");

@@ -4375,9 +4375,9 @@ bool Sema::MergeFunctionDecl(FunctionDecl *New, NamedDecl *&OldD, Scope *S,
     IsMergeRequiredForMSVC = true;
 
   // In _WIN32 environment, merging is always required.
-#ifdef _WIN32
+//#ifdef _WIN32
   IsMergeRequiredForMSVC = true;
-#endif
+// #endif
 
   // Perform the merge if required.
   if (IsMergeRequiredForMSVC) {
@@ -5534,9 +5534,9 @@ static bool CheckAnonMemberRedeclaration(Sema &SemaRef, Scope *S,
     return false;
   }
 
-#ifdef _WIN32
+//#ifdef _WIN32
   return false;
-#endif
+//#endif
 
   SemaRef.Diag(NameLoc, diag::err_anonymous_record_member_redecl)
     << IsUnion << Name;
