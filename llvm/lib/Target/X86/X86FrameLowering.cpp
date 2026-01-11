@@ -33,6 +33,7 @@
 #include "llvm/MC/MCSymbol.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/LEB128.h"
+#include "llvm/Support/raw_ostream.h"
 #include "llvm/Target/TargetOptions.h"
 #include <cstdlib>
 
@@ -44,6 +45,11 @@ STATISTIC(NumFrameExtraProbe,
 STATISTIC(NumFunctionUsingPush2Pop2, "Number of funtions using push2/pop2");
 
 using namespace llvm;
+
+static cl::opt<std::string> X86Win32SEHRestoreTraceFunc(
+    "x86-win32-seh-trace-restore-func",
+    cl::desc("Dump Win32 SEH restore prologue details for this function name"),
+    cl::Hidden, cl::init(""));
 
 X86FrameLowering::X86FrameLowering(const X86Subtarget &STI,
                                    MaybeAlign StackAlignOverride)
@@ -3865,6 +3871,17 @@ MachineBasicBlock::iterator X86FrameLowering::restoreWin32EHStackPointers(
   int EHRegOffset = getFrameIndexReference(MF, FI, UsedReg).getFixed();
   int EndOffset = -EHRegOffset - EHRegSize;
   FuncInfo.EHRegNodeEndOffset = EndOffset;
+
+  if (!X86Win32SEHRestoreTraceFunc.empty() &&
+      MF.getName() == X86Win32SEHRestoreTraceFunc) {
+    errs() << "[x86-win32-seh] " << MF.getName() << " bb." << MBB.getNumber()
+           << " restoreWin32EHStackPointers RestoreSP=" << (RestoreSP ? "true" : "false")
+           << " EHRegSize=" << EHRegSize
+           << " EHRegOffset=" << EHRegOffset
+           << " EndOffset=" << EndOffset
+           << " UsedReg=" << (unsigned)UsedReg
+           << "\n";
+  }
 
   if (UsedReg == FramePtr) {
     // ADD $offset, %ebp
