@@ -13,8 +13,8 @@
 #include "llvm/TargetParser/X86TargetParser.h"
 #include "llvm/ADT/Bitset.h"
 #include "llvm/ADT/StringSwitch.h"
-#include "llvm/ADT/Triple.h"
-#include "llvm/Support/Host.h"
+#include "llvm/TargetParser/Host.h"
+#include "llvm/TargetParser/Triple.h"
 #include <numeric>
 
 using namespace llvm;
