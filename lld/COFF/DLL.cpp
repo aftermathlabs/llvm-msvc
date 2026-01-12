@@ -152,8 +152,11 @@ binImports(COFFLinkerContext &ctx,
   };
   std::map<std::string, std::vector<DefinedImportData *>, decltype(less)> m(
       less);
-  for (DefinedImportData *sym : imports)
+  for (DefinedImportData *sym : imports) {
+    if (!sym)
+      continue;
     m[sym->getDLLName().lower()].push_back(sym);
+  }
 
   std::vector<std::vector<DefinedImportData *>> v;
   for (auto &kv : m) {
