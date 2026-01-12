@@ -1247,7 +1247,7 @@ void Writer::createImportTables() {
 }
 
 void Writer::appendImportThunks() {
-  if (ctx.importFileInstances.empty())
+  if (ctx.importFileInstances.empty() && ctx.symtab.extraImportThunkChunks.empty())
     return;
 
   llvm::TimeTraceScope timeScope("Import thunks");
@@ -1264,6 +1264,10 @@ void Writer::appendImportThunks() {
     if (file->thunkLive)
       textSec->addChunk(thunk->getChunk());
   }
+
+  // Add synthetic thunks created to jump via existing __imp_<name> symbols.
+  for (Chunk *c : ctx.symtab.extraImportThunkChunks)
+    textSec->addChunk(c);
 
   if (!delayIdata.empty()) {
     Defined *helper = cast<Defined>(ctx.config.delayLoadHelper);

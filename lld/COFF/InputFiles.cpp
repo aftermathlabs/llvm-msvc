@@ -979,8 +979,37 @@ void ImportFile::parse() {
   impSym = ctx.symtab.addImportData(impName, this);
   // If this was a duplicate, we logged an error but may continue;
   // in this case, impSym is nullptr.
-  if (!impSym)
+  if (!impSym) {
+    // If possible, synthesize a thunk for <name> that jumps via the existing
+    // __imp_<name> symbol, and mark this ImportFile as not contributing to the
+    // import tables.
+    if (hdr->getType() == llvm::COFF::IMPORT_CODE) {
+      if (Symbol *existingImp = ctx.symtab.find(impName)) {
+        if (auto *existingDef = dyn_cast<Defined>(existingImp)) {
+          Chunk *thunk = nullptr;
+          if (hdr->Machine == AMD64)
+            thunk = make<ImportThunkChunkX64>(ctx, existingDef);
+          else if (hdr->Machine == I386)
+            thunk = make<ImportThunkChunkX86>(ctx, existingDef);
+          else if (hdr->Machine == ARM64)
+            thunk = make<ImportThunkChunkARM64>(ctx, existingDef);
+          else {
+            assert(hdr->Machine == ARMNT);
+            thunk = make<ImportThunkChunkARM>(ctx, existingDef);
+          }
+          Symbol *sym = ctx.symtab.find(name);
+          if (!sym || isa<Undefined>(sym) || sym->isLazy()) {
+            ctx.symtab.addSynthetic(name, thunk);
+            ctx.symtab.extraImportThunkChunks.push_back(thunk);
+          }
+        }
+      }
+    }
+
+    live = false;
+    thunkLive = false;
     return;
+  }
 
   if (hdr->getType() == llvm::COFF::IMPORT_CONST)
     static_cast<void>(ctx.symtab.addImportData(name, this));

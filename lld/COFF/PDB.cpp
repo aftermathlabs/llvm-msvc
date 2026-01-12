@@ -1211,7 +1211,8 @@ void PDBLinker::addPublicsToPDB() {
     // Only emit external, defined, live symbols that have a chunk. Static,
     // non-external symbols do not appear in the symbol table.
     auto *def = dyn_cast<Defined>(s);
-    if (def && def->isLive() && def->getChunk()) {
+    if (def && def->isLive() && def->getChunk() &&
+        ctx.getOutputSection(def->getChunk())) {
       // Don't emit a public symbol for coverage data symbols. LLVM code
       // coverage (and PGO) create a __profd_ and __profc_ symbol for every
       // function. C++ mangled names are long, and tend to dominate symbol size.

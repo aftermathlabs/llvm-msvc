@@ -114,6 +114,9 @@ public:
   // A list of chunks which to be added to .rdata.
   std::vector<Chunk *> localImportChunks;
 
+  // A list of synthetic import thunks to be added to .text.
+  std::vector<Chunk *> extraImportThunkChunks;
+
   // Iterates symbols in non-determinstic hash table order.
   template <typename T> void forEachSymbol(T callback) {
     for (auto &pair : symMap)
