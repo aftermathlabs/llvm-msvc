@@ -3088,6 +3088,21 @@ void X86FrameLowering::determineCalleeSaves(MachineFunction &MF,
                                             RegScavenger *RS) const {
   TargetFrameLowering::determineCalleeSaves(MF, SavedRegs, RS);
 
+  // Win32 asynchronous SEH may clobber non-volatile GPRs on the exception path.
+  // To satisfy the Win32 ABI (EBX/ESI/EDI must be preserved across a call),
+  // force-save/restore them for SEH functions that have EH funclets.
+  if (STI.isTargetWindowsMSVC() && STI.isTargetWin32()) {
+    const Function &F = MF.getFunction();
+    if (F.hasPersonalityFn()) {
+      EHPersonality P = classifyEHPersonality(F.getPersonalityFn());
+      if (isAsynchronousEHPersonality(P) && MF.hasEHFunclets()) {
+        SavedRegs.set(X86::EBX);
+        SavedRegs.set(X86::ESI);
+        SavedRegs.set(X86::EDI);
+      }
+    }
+  }
+
   // Spill the BasePtr if it's used.
   if (TRI->hasBasePointer(MF)) {
     Register BasePtr = TRI->getBaseRegister();
