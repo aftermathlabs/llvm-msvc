@@ -35,7 +35,7 @@
 
 ## Features:
 - Compatible with ``MSVC`` syntax as much as possible.
-- Improved ``SEH`` stability.
+- Almost fully compatible with ``SEH``.
 - Added some special Intrinsic functions(``__vmx_vmread``/``__vmx_write``).
 - Supports ``x64``/``ARM64`` windows drivers.
 - Supports ``AArch64`` android GKI drivers.
