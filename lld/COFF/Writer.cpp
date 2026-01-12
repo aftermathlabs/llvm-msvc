@@ -1225,6 +1225,8 @@ void Writer::createImportTables() {
   for (ImportFile *file : ctx.importFileInstances) {
     if (!file->live)
       continue;
+    if (!file->impSym)
+      continue;
 
     std::string dll = StringRef(file->dllName).lower();
     if (ctx.config.dllOrder.count(dll) == 0)
