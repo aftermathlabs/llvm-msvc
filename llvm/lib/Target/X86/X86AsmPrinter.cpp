@@ -919,18 +919,6 @@ void X86AsmPrinter::emitStartOfAsmFile(Module &M) {
         S, MCConstantExpr::create(Feat00Value, MMI->getContext()));
   }
   OutStreamer->emitSyntaxDirective();
-
-  if (TT.isOSBinFormatCOFF()) {
-    MCSection *Cur = OutStreamer->getCurrentSectionOnly();
-    MCSection *Nt = MMI->getContext().getCOFFSection(
-        "newworld",
-        COFF::IMAGE_SCN_CNT_INITIALIZED_DATA | COFF::IMAGE_SCN_MEM_READ,
-        SectionKind::getReadOnly());
-    OutStreamer->switchSection(Nt);
-    OutStreamer->emitBytes(StringRef("New World coming soon", 22));
-    OutStreamer->endSection(Nt);
-    OutStreamer->switchSection(Cur);
-  }
   
   // If this is not inline asm and we're in 16-bit
   // mode prefix assembly with .code16.
