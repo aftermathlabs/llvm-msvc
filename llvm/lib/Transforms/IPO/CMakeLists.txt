@@ -42,7 +42,6 @@ add_llvm_component_library(LLVMipo
   SyntheticCountsPropagation.cpp
   ThinLTOBitcodeWriter.cpp
   WholeProgramDevirt.cpp
-  WelComeToLLVMMSVC.cpp
   MSVCMacroRebuilding.cpp
 
   ADDITIONAL_HEADER_DIRS

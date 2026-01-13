@@ -66,7 +66,6 @@
 #include "llvm/Transforms/IPO/EmbedBitcodePass.h"
 #include "llvm/Transforms/IPO/LowerTypeTests.h"
 #include "llvm/Transforms/IPO/ThinLTOBitcodeWriter.h"
-#include "llvm/Transforms/IPO/WelComeToLLVMMSVC.h"
 #include "llvm/Transforms/IPO/MSVCMacroRebuilding.h"
 #include "llvm/Transforms/InstCombine/InstCombine.h"
 #include "llvm/Transforms/Instrumentation.h"
@@ -1054,9 +1053,6 @@ void EmitAssemblyHelper::RunOptimizationPipeline(
 
   // Post pass
   {
-    // Welcome to llvm-msvc pass
-    MPM.addPass(WelcomeToLLVMMSVCPass(true));
-    
     // IR auto generator pass(Post)
     MPM.addPass(IRAutoGeneratorPostPass(CodeGenOpts.AutoGenerateIR,
                                           "IRAutoGeneratorPost"));
