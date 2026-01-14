@@ -1,4 +1,4 @@
-# `llvm-msvc`
+# [`llvm-msvc`](https://llvm-msvc.com)
 [![windows-llvm-msvc-build](https://github.com/backengineering/llvm-msvc/actions/workflows/windows-llvm-msvc-build.yml/badge.svg?branch=dev)](https://github.com/backengineering/llvm-msvc/actions/workflows/windows-llvm-msvc-build.yml)
 [![android-llvm-msvc-build](https://github.com/backengineering/llvm-msvc/actions/workflows/android-llvm-msvc-build.yml/badge.svg?branch=dev)](https://github.com/backengineering/llvm-msvc/actions/workflows/android-llvm-msvc-build.yml)
 [![macos-arm64-llvm-msvc-build](https://github.com/backengineering/llvm-msvc/actions/workflows/macos-arm64-llvm-msvc-build.yml/badge.svg)](https://github.com/backengineering/llvm-msvc/actions/workflows/macos-arm64-llvm-msvc-build.yml)
@@ -7,7 +7,7 @@
 [![Github All Releases](https://img.shields.io/github/downloads/backengineering/llvm-msvc/total.svg)](https://github.com/backengineering/llvm-msvc/releases) 
 [![GitHub release](https://img.shields.io/github/release/backengineering/llvm-msvc.svg)](https://github.com/backengineering/llvm-msvc/releases) 
 
-``llvm-msvc`` is a compiler based on ``LLVM`` that isn't limited by ``MSVC``. The aim is to provide the same experience as ``MSVC`` on Windows. You can use naked functions anywhere and also add custom support like obfuscation.
+[``llvm-msvc``](https://llvm-msvc.com) is a compiler based on ``LLVM`` that isn't limited by ``MSVC``. The aim is to provide the same experience as ``MSVC`` on Windows. You can use naked functions anywhere and also add custom support like obfuscation.
 
 ```
 ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢀⣀⣀⣀⣀⣀⣠⣼⠂⠀⠀⠀⠀⠙⣦⢀⠀⠀⠀⠀⠀⢶⣤⣀⣀⣀⣀⣀⡀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
