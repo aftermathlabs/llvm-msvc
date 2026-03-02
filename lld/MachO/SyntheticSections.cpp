@@ -17,6 +17,7 @@
 #include "Symbols.h"
 
 #include "lld/Common/CommonLinkerContext.h"
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Config/llvm-config.h"
 #include "llvm/Support/EndianStream.h"
@@ -41,6 +42,15 @@ using namespace llvm::support;
 using namespace llvm::support::endian;
 using namespace lld;
 using namespace lld::macho;
+
+template <typename T, typename Compare>
+static void sortMaybeParallel(std::vector<T> &v, Compare comp,
+                              size_t parallelThreshold) {
+  if (parallel::strategy.ThreadsRequested == 1 || v.size() < parallelThreshold)
+    llvm::sort(v, comp);
+  else
+    parallelSort(v, comp);
+}
 
 // Reads `len` bytes at data and writes the 32-byte SHA256 checksum to `output`.
 static void sha256(const uint8_t *data, size_t len, uint8_t *output) {
@@ -279,9 +289,12 @@ void RebaseSection::finalizeContents() {
   raw_svector_ostream os{contents};
   os << static_cast<uint8_t>(REBASE_OPCODE_SET_TYPE_IMM | REBASE_TYPE_POINTER);
 
-  llvm::sort(locations, [](const Location &a, const Location &b) {
-    return a.isec->getVA(a.offset) < b.isec->getVA(b.offset);
-  });
+  static constexpr size_t kParallelSortThreshold = 2048;
+  sortMaybeParallel(locations,
+                    [](const Location &a, const Location &b) {
+                      return a.isec->getVA(a.offset) < b.isec->getVA(b.offset);
+                    },
+                    kParallelSortThreshold);
 
   for (size_t i = 0, count = locations.size(); i < count;) {
     const OutputSegment *seg = locations[i].isec->parent->parent;
@@ -1132,8 +1145,12 @@ void SymtabSection::emitStabs() {
   }
 
   // Cache the file ID for each symbol in an std::pair for faster sorting.
+  using StabsCandidate = std::pair<Defined *, ObjFile *>;
   using SortingPair = std::pair<Defined *, int>;
-  std::vector<SortingPair> symbolsNeedingStabs;
+  std::vector<StabsCandidate> stabsCandidates;
+  SmallVector<ObjFile *> stabsFiles;
+  DenseSet<ObjFile *> seenStabsFiles;
+
   for (const SymtabEntry &entry :
        concat<SymtabEntry>(localSymbols, externalSymbols)) {
     Symbol *sym = entry.sym;
@@ -1152,11 +1169,30 @@ void SymtabSection::emitStabs() {
         continue;
 
       ObjFile *file = defined->getObjectFile();
-      if (!file || !file->compileUnit)
+      if (!file)
         continue;
 
-      symbolsNeedingStabs.emplace_back(defined, defined->isec->getFile()->id);
+      stabsCandidates.emplace_back(defined, file);
+      if (seenStabsFiles.insert(file).second)
+        stabsFiles.push_back(file);
     }
+  }
+
+  static constexpr size_t kParallelCompileUnitThreshold = 32;
+  if (stabsFiles.size() < kParallelCompileUnitThreshold) {
+    for (ObjFile *file : stabsFiles)
+      file->hasCompileUnit();
+  } else {
+    parallelForEach(stabsFiles, [](ObjFile *file) { file->hasCompileUnit(); });
+  }
+
+  std::vector<SortingPair> symbolsNeedingStabs;
+  symbolsNeedingStabs.reserve(stabsCandidates.size());
+  for (const StabsCandidate &candidate : stabsCandidates) {
+    Defined *defined = candidate.first;
+    ObjFile *file = candidate.second;
+    if (file->compileUnit)
+      symbolsNeedingStabs.emplace_back(defined, defined->isec->getFile()->id);
   }
 
   llvm::stable_sort(symbolsNeedingStabs,
@@ -2160,13 +2196,17 @@ void ChainedFixupsSection::finalizeContents() {
     loc.offset =
         loc.isec->parent->getSegmentOffset() + loc.isec->getOffset(loc.offset);
 
-  llvm::sort(locations, [](const Location &a, const Location &b) {
-    const OutputSegment *segA = a.isec->parent->parent;
-    const OutputSegment *segB = b.isec->parent->parent;
-    if (segA == segB)
-      return a.offset < b.offset;
-    return segA->addr < segB->addr;
-  });
+  static constexpr size_t kParallelSortThreshold = 2048;
+  sortMaybeParallel(
+      locations,
+      [](const Location &a, const Location &b) {
+        const OutputSegment *segA = a.isec->parent->parent;
+        const OutputSegment *segB = b.isec->parent->parent;
+        if (segA == segB)
+          return a.offset < b.offset;
+        return segA->addr < segB->addr;
+      },
+      kParallelSortThreshold);
 
   auto sameSegment = [](const Location &a, const Location &b) {
     return a.isec->parent->parent == b.isec->parent->parent;

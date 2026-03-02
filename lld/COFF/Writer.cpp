@@ -23,6 +23,7 @@
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/StringSet.h"
 #include "llvm/BinaryFormat/COFF.h"
+#include "llvm/Support/BLAKE3.h"
 #include "llvm/Support/BinaryStreamReader.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/Endian.h"
@@ -31,12 +32,15 @@
 #include "llvm/Support/Path.h"
 #include "llvm/Support/RandomNumberGenerator.h"
 #include "llvm/Support/TimeProfiler.h"
-#include "llvm/Support/xxhash.h"
 #include <algorithm>
 #include <cstdio>
 #include <map>
 #include <memory>
 #include <utility>
+#if defined(__unix__) || defined(__APPLE__)
+#include <sys/mman.h>
+#include <unistd.h>
+#endif
 
 using namespace llvm;
 using namespace llvm::COFF;
@@ -110,7 +114,7 @@ public:
       // "the timestamp field is really a hash", or a 4-byte size field
       // followed by that many bytes containing a longer hash (with the
       // lowest 4 bytes usually being the timestamp in little-endian order).
-      // Consider storing the full 8 bytes computed by xxh3_64bits here.
+      // Consider storing the full 8 bytes computed by the build-id hash here.
       fillEntry(d, COFF::IMAGE_DEBUG_TYPE_REPRO, 0, 0, 0);
     }
   }
@@ -2237,19 +2241,80 @@ void Writer::writeSections() {
     // merged into a code section don't.
     if ((sec->header.Characteristics & IMAGE_SCN_CNT_CODE) &&
         (ctx.config.machine == AMD64 || ctx.config.machine == I386)) {
+      SmallVector<std::pair<uint32_t, uint32_t>, 0> gaps;
+      gaps.reserve(sec->chunks.size() + 1);
       uint32_t prevEnd = 0;
       for (Chunk *c : sec->chunks) {
         uint32_t off = c->getRVA() - sec->getRVA();
-        memset(secBuf + prevEnd, 0xCC, off - prevEnd);
+        if (off > prevEnd)
+          gaps.emplace_back(prevEnd, off);
         prevEnd = off + c->getSize();
       }
-      memset(secBuf + prevEnd, 0xCC, sec->getRawSize() - prevEnd);
+      if (sec->getRawSize() > prevEnd)
+        gaps.emplace_back(prevEnd, sec->getRawSize());
+
+      auto fillGap = [&](const std::pair<uint32_t, uint32_t> &gap) {
+        memset(secBuf + gap.first, 0xCC, gap.second - gap.first);
+      };
+      static constexpr size_t kParallelInt3FillThreshold = 2048;
+      if (parallel::strategy.ThreadsRequested != 1 &&
+          gaps.size() >= kParallelInt3FillThreshold)
+        parallelForEach(gaps, fillGap);
+      else
+        for (const auto &gap : gaps)
+          fillGap(gap);
     }
 
     parallelForEach(sec->chunks, [&](Chunk *c) {
       c->writeTo(secBuf + c->getRVA() - sec->getRVA());
     });
   }
+}
+
+static void markChunkAsDontNeed(ArrayRef<uint8_t> arr) {
+#if defined(MADV_DONTNEED) && (defined(__unix__) || defined(__APPLE__))
+  if (arr.empty())
+    return;
+  static size_t pageSize = [] {
+    long p = ::sysconf(_SC_PAGESIZE);
+    return p > 0 ? static_cast<size_t>(p) : size_t(0);
+  }();
+  if (!pageSize)
+    return;
+
+  uintptr_t begin = reinterpret_cast<uintptr_t>(arr.data());
+  uintptr_t end = begin + arr.size();
+  uintptr_t alignedBegin = ((begin + pageSize - 1) / pageSize) * pageSize;
+  uintptr_t alignedEnd = (end / pageSize) * pageSize;
+  if (alignedBegin >= alignedEnd)
+    return;
+  (void)::madvise(reinterpret_cast<void *>(alignedBegin), alignedEnd - alignedBegin,
+                  MADV_DONTNEED);
+#else
+  (void)arr;
+#endif
+}
+
+static uint64_t computeChunkedBLAKE3Hash64(ArrayRef<uint8_t> data) {
+  constexpr size_t chunkSize = 1024 * 1024;
+  if (data.empty())
+    return read64le(BLAKE3::hash<8>(ArrayRef<uint8_t>()).data());
+
+  size_t numChunks = (data.size() + chunkSize - 1) / chunkSize;
+  std::unique_ptr<uint8_t[]> chunkHashes(new uint8_t[numChunks * 8]);
+
+  parallelFor(0, numChunks, [&](size_t i) {
+    size_t begin = i * chunkSize;
+    size_t end = std::min(begin + chunkSize, data.size());
+    ArrayRef<uint8_t> chunk = data.slice(begin, end - begin);
+    auto digest = BLAKE3::hash<8>(chunk);
+    memcpy(chunkHashes.get() + i * 8, digest.data(), 8);
+    markChunkAsDontNeed(chunk);
+  });
+
+  auto digest =
+      BLAKE3::hash<8>(ArrayRef<uint8_t>(chunkHashes.get(), numChunks * 8));
+  return read64le(digest.data());
 }
 
 void Writer::writeBuildId() {
@@ -2272,15 +2337,14 @@ void Writer::writeBuildId() {
   // "timestamp" in the COFF file header, and the ones in the coff debug
   // directory.  Now we can hash the file and write that hash to the various
   // timestamp fields in the file.
-  StringRef outputFileData(
-      reinterpret_cast<const char *>(buffer->getBufferStart()),
-      buffer->getBufferSize());
+  ArrayRef<uint8_t> outputFileData(buffer->getBufferStart(),
+                                   buffer->getBufferSize());
 
   uint32_t timestamp = config->timestamp;
   uint64_t hash = 0;
 
   if (config->repro || generateSyntheticBuildId)
-    hash = xxh3_64bits(outputFileData);
+    hash = computeChunkedBLAKE3Hash64(outputFileData);
 
   if (config->repro)
     timestamp = static_cast<uint32_t>(hash);
@@ -2289,7 +2353,7 @@ void Writer::writeBuildId() {
     buildId->buildId->PDB70.CVSignature = OMF::Signature::PDB70;
     buildId->buildId->PDB70.Age = 1;
     memcpy(buildId->buildId->PDB70.Signature, &hash, 8);
-    // xxhash only gives us 8 bytes, so put some fixed data in the other half.
+    // Timestamp uses 64-bit hash data; keep a fixed payload in the other half.
     // Change PDB signature.
     memcpy(&buildId->buildId->PDB70.Signature[8], "NewWorld", 8);
   }

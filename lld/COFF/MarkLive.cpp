@@ -11,6 +11,7 @@
 #include "Symbols.h"
 #include "lld/Common/Timer.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/Support/Parallel.h"
 #include "llvm/Support/TimeProfiler.h"
 #include <vector>
 
@@ -57,6 +58,40 @@ void markLive(COFFLinkerContext &ctx) {
     addSym(b);
 
   while (!worklist.empty()) {
+    static constexpr size_t kParallelWorklistThreshold = 4096;
+    if (llvm::parallel::strategy.ThreadsRequested != 1 &&
+        worklist.size() >= kParallelWorklistThreshold) {
+      struct PendingRefs {
+        SmallVector<Symbol *, 0> symbols;
+        SmallVector<SectionChunk *, 0> children;
+      };
+
+      SmallVector<SectionChunk *, 0> batch;
+      batch.reserve(worklist.size());
+      while (!worklist.empty())
+        batch.push_back(worklist.pop_back_val());
+
+      std::vector<PendingRefs> pending(batch.size());
+      llvm::parallelFor(0, batch.size(), [&](size_t i) {
+        SectionChunk *sc = batch[i];
+        assert(sc->live && "We mark as live when pushing onto the worklist!");
+        PendingRefs &refs = pending[i];
+        for (Symbol *b : sc->symbols())
+          if (b)
+            refs.symbols.push_back(b);
+        for (SectionChunk &child : sc->children())
+          refs.children.push_back(&child);
+      });
+
+      for (size_t i = 0; i < batch.size(); ++i) {
+        for (Symbol *sym : pending[i].symbols)
+          addSym(sym);
+        for (SectionChunk *child : pending[i].children)
+          enqueue(child);
+      }
+      continue;
+    }
+
     SectionChunk *sc = worklist.pop_back_val();
     assert(sc->live && "We mark as live when pushing onto the worklist!");
 

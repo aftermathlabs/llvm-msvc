@@ -67,6 +67,7 @@
 #include "llvm/Support/Endian.h"
 #include "llvm/Support/LEB128.h"
 #include "llvm/Support/MemoryBuffer.h"
+#include "llvm/Support/Parallel.h"
 #include "llvm/Support/Path.h"
 #include "llvm/Support/TarWriter.h"
 #include "llvm/Support/TimeProfiler.h"
@@ -341,6 +342,8 @@ template <class SectionHeader>
 void ObjFile::parseSections(ArrayRef<SectionHeader> sectionHeaders) {
   sections.reserve(sectionHeaders.size());
   auto *buf = reinterpret_cast<const uint8_t *>(mb.getBufferStart());
+  SmallVector<CStringInputSection *, 4> cstringSections;
+  uint64_t cstringBytes = 0;
 
   for (const SectionHeader &sec : sectionHeaders) {
     StringRef name =
@@ -378,10 +381,9 @@ void ObjFile::parseSections(ArrayRef<SectionHeader> sectionHeaders) {
               " contains relocations, which is unsupported");
       bool dedupLiterals =
           name == section_names::objcMethname || config->dedupStrings;
-      InputSection *isec =
-          make<CStringInputSection>(section, data, align, dedupLiterals);
-      // FIXME: parallelize this?
-      cast<CStringInputSection>(isec)->splitIntoPieces();
+      auto *isec = make<CStringInputSection>(section, data, align, dedupLiterals);
+      cstringSections.push_back(isec);
+      cstringBytes += data.size();
       section.subsections.push_back({0, isec});
     } else if (isWordLiteralSection(sec.flags)) {
       if (sec.nreloc)
@@ -410,17 +412,30 @@ void ObjFile::parseSections(ArrayRef<SectionHeader> sectionHeaders) {
       if (name == section_names::addrSig)
         addrSigSection = sections.back();
 
-      auto *isec = make<ConcatInputSection>(section, data, align);
-      if (isDebugSection(isec->getFlags()) &&
-          isec->getSegName() == segment_names::dwarf) {
+      if (isDebugSection(sec.flags) && segname == segment_names::dwarf) {
         // Instead of emitting DWARF sections, we emit STABS symbols to the
-        // object files that contain them. We filter them out early to avoid
-        // parsing their relocations unnecessarily.
-        debugSections.push_back(isec);
+        // object files that contain them. Keep only section metadata needed for
+        // DWARF path/line lookup and avoid creating ConcatInputSection objects.
+        debugSections.push_back({name, data});
       } else {
+        auto *isec = make<ConcatInputSection>(section, data, align);
         section.subsections.push_back({0, isec});
       }
     }
+  }
+
+  static constexpr size_t kParallelCStringSectionThreshold = 4;
+  static constexpr uint64_t kParallelCStringBytesThreshold = 64 * 1024;
+  bool shouldParallelizeCStrings =
+      parallel::strategy.ThreadsRequested != 1 &&
+      cstringSections.size() >= kParallelCStringSectionThreshold &&
+      cstringBytes >= kParallelCStringBytesThreshold;
+  if (shouldParallelizeCStrings) {
+    parallelForEach(cstringSections,
+                    [](CStringInputSection *isec) { isec->splitIntoPieces(); });
+  } else {
+    for (CStringInputSection *isec : cstringSections)
+      isec->splitIntoPieces();
   }
 }
 
@@ -537,6 +552,71 @@ void ObjFile::parseRelocations(ArrayRef<SectionHeader> sectionHeaders,
       reinterpret_cast<const relocation_info *>(buf + sec.reloff), sec.nreloc);
 
   Subsections &subsections = section.subsections;
+  // For large relocation tables, pre-reserve per-subsection relocation vectors
+  // when records are in ascending address order.
+  static constexpr size_t kRelocPreReserveThreshold = 2048;
+  if (relInfos.size() >= kRelocPreReserveThreshold && !subsections.empty()) {
+    std::vector<size_t> relocCounts(subsections.size(), 0);
+    size_t subsecIdx = 0;
+    bool canReserve = true;
+    uint32_t prevAddr = 0;
+    bool hasPrevAddr = false;
+
+    for (size_t i = 0; i < relInfos.size() && canReserve; ++i) {
+      relocation_info relInfo = relInfos[i];
+      if (target->hasAttr(relInfo.r_type, RelocAttrBits::ADDEND)) {
+        if (i + 1 >= relInfos.size()) {
+          canReserve = false;
+          break;
+        }
+        relInfo = relInfos[++i];
+      }
+      if (relInfo.r_address & R_SCATTERED)
+        continue;
+
+      uint32_t addr = static_cast<uint32_t>(relInfo.r_address);
+      if (hasPrevAddr && addr < prevAddr) {
+        canReserve = false;
+        break;
+      }
+      hasPrevAddr = true;
+      prevAddr = addr;
+
+      while (subsecIdx + 1 < subsections.size() &&
+             subsections[subsecIdx + 1].offset <= addr)
+        ++subsecIdx;
+
+      const Subsection &subsec = subsections[subsecIdx];
+      uint64_t subsecEnd = subsec.offset + subsec.isec->getSize();
+      if (addr < subsec.offset || addr >= subsecEnd) {
+        canReserve = false;
+        break;
+      }
+
+      ++relocCounts[subsecIdx];
+      if (target->hasAttr(relInfo.r_type, RelocAttrBits::SUBTRAHEND)) {
+        // SUBTRAHEND is paired with a following UNSIGNED relocation and emits
+        // one extra Reloc record during parse. Skip the pair here to avoid
+        // double-counting the UNSIGNED record on the next loop iteration.
+        if (i + 1 >= relInfos.size()) {
+          canReserve = false;
+          break;
+        }
+        ++relocCounts[subsecIdx];
+        ++i;
+      }
+    }
+
+    if (canReserve) {
+      for (size_t i = 0; i < relocCounts.size(); ++i) {
+        if (relocCounts[i] == 0)
+          continue;
+        auto &relocs = subsections[i].isec->relocs;
+        relocs.reserve(relocs.size() + relocCounts[i]);
+      }
+    }
+  }
+
   auto subsecIt = subsections.rbegin();
   for (size_t i = 0; i < relInfos.size(); i++) {
     // Paired relocations serve as Mach-O's method for attaching a
@@ -805,6 +885,41 @@ void ObjFile::parseSymbols(ArrayRef<typename LP::section> sectionHeaders,
   std::vector<std::vector<uint32_t>> symbolsBySection(sections.size());
   symbols.resize(nList.size());
   SmallVector<unsigned, 32> undefineds;
+  const bool collectLocalNoDeadStrip = config->deadStrip;
+  auto recordLocalNoDeadStrip = [&](Symbol *sym) {
+    if (!collectLocalNoDeadStrip)
+      return;
+    auto *defined = dyn_cast_or_null<Defined>(sym);
+    if (!defined || defined->isExternal() || !defined->noDeadStrip)
+      return;
+    localNoDeadStripSymbols.push_back(defined);
+  };
+  // Pre-size vectors only for large symbol tables to avoid a second pass
+  // overhead on small object files.
+  static constexpr size_t kSymbolPrecountThreshold = 256;
+  if (nList.size() >= kSymbolPrecountThreshold) {
+    std::vector<uint32_t> sectionSymbolCounts(sections.size(), 0);
+    size_t undefinedCount = 0;
+    for (const NList &sym : nList) {
+      if (sym.n_type & N_STAB)
+        continue;
+      if ((sym.n_type & N_TYPE) == N_SECT) {
+        if (sym.n_sect != 0) {
+          size_t secIndex = sym.n_sect - 1;
+          if (secIndex < sections.size() &&
+              !sections[secIndex]->subsections.empty())
+            ++sectionSymbolCounts[secIndex];
+        }
+      } else if (isUndef(sym)) {
+        ++undefinedCount;
+      }
+    }
+    for (size_t i = 0; i < symbolsBySection.size(); ++i)
+      if (sectionSymbolCounts[i] != 0)
+        symbolsBySection[i].reserve(sectionSymbolCounts[i]);
+    undefineds.reserve(undefinedCount);
+  }
+
   for (uint32_t i = 0; i < nList.size(); ++i) {
     const NList &sym = nList[i];
 
@@ -823,6 +938,7 @@ void ObjFile::parseSymbols(ArrayRef<typename LP::section> sectionHeaders,
       undefineds.push_back(i);
     } else {
       symbols[i] = parseNonSectionSymbol(sym, strtab);
+      recordLocalNoDeadStrip(symbols[i]);
     }
   }
 
@@ -852,6 +968,7 @@ void ObjFile::parseSymbols(ArrayRef<typename LP::section> sectionHeaders,
         }
         symbols[symIndex] =
             createDefined(sym, name, isec, 0, isec->getSize(), forceHidden);
+        recordLocalNoDeadStrip(symbols[symIndex]);
       }
       continue;
     }
@@ -865,15 +982,20 @@ void ObjFile::parseSymbols(ArrayRef<typename LP::section> sectionHeaders,
     // along symbol boundaries.
     // We populate subsections by repeatedly splitting the last (highest
     // address) subsection.
-    llvm::stable_sort(symbolIndices, [&](uint32_t lhs, uint32_t rhs) {
+    auto symbolOrderLess = [&](uint32_t lhs, uint32_t rhs) {
       // Put extern weak symbols after other symbols at the same address so
       // that weak symbol coalescing works correctly. See
       // SymbolTable::addDefined() for details.
       if (nList[lhs].n_value == nList[rhs].n_value &&
           nList[lhs].n_type & N_EXT && nList[rhs].n_type & N_EXT)
-        return !(nList[lhs].n_desc & N_WEAK_DEF) && (nList[rhs].n_desc & N_WEAK_DEF);
+        return !(nList[lhs].n_desc & N_WEAK_DEF) &&
+               (nList[rhs].n_desc & N_WEAK_DEF);
       return nList[lhs].n_value < nList[rhs].n_value;
-    });
+    };
+    static constexpr size_t kSortedCheckThreshold = 256;
+    if (symbolIndices.size() < kSortedCheckThreshold ||
+        !llvm::is_sorted(symbolIndices, symbolOrderLess))
+      llvm::stable_sort(symbolIndices, symbolOrderLess);
     for (size_t j = 0; j < symbolIndices.size(); ++j) {
       const uint32_t symIndex = symbolIndices[j];
       const NList &sym = nList[symIndex];
@@ -899,6 +1021,7 @@ void ObjFile::parseSymbols(ArrayRef<typename LP::section> sectionHeaders,
         isec->hasAltEntry = symbolOffset != 0;
         symbols[symIndex] = createDefined(sym, name, isec, symbolOffset,
                                           symbolSize, forceHidden);
+        recordLocalNoDeadStrip(symbols[symIndex]);
         continue;
       }
       auto *concatIsec = cast<ConcatInputSection>(isec);
@@ -918,6 +1041,7 @@ void ObjFile::parseSymbols(ArrayRef<typename LP::section> sectionHeaders,
       // subsection.
       symbols[symIndex] = createDefined(sym, name, nextIsec, /*value=*/0,
                                         symbolSize, forceHidden);
+      recordLocalNoDeadStrip(symbols[symIndex]);
       // TODO: ld64 appears to preserve the original alignment as well as each
       // subsection's offset from the last aligned address. We should consider
       // emulating that behavior.
@@ -1019,16 +1143,34 @@ template <class LP> void ObjFile::parse() {
                           c->nsyms);
     const char *strtab = reinterpret_cast<const char *>(buf) + c->stroff;
     bool subsectionsViaSymbols = hdr->flags & MH_SUBSECTIONS_VIA_SYMBOLS;
+    // Pre-reserve symbol table capacity to reduce DenseMap/vector reallocation
+    // churn when ingesting large object files.
+    static constexpr size_t kSymbolReserveThreshold = 128;
+    if (nList.size() >= kSymbolReserveThreshold)
+      symtab->reserve(nList.size());
     parseSymbols<LP>(sectionHeaders, nList, strtab, subsectionsViaSymbols);
   }
 
   // The relocations may refer to the symbols, so we parse them after we have
-  // parsed all the symbols.
-  for (size_t i = 0, n = sections.size(); i < n; ++i)
-    if (!sections[i]->subsections.empty())
-      parseRelocations(sectionHeaders, sectionHeaders[i], *sections[i]);
+  // parsed all the symbols. Parallelize across sections since each section's
+  // relocations are independent
+  {
+    SmallVector<size_t> relocSections;
+    for (size_t i = 0, n = sections.size(); i < n; ++i)
+      if (!sections[i]->subsections.empty())
+        relocSections.push_back(i);
 
-  parseDebugInfo();
+    static constexpr size_t kParallelRelocSectionThreshold = 8;
+    if (relocSections.size() < kParallelRelocSectionThreshold) {
+      for (size_t i : relocSections)
+        parseRelocations(sectionHeaders, sectionHeaders[i], *sections[i]);
+    } else {
+      parallelFor(0, relocSections.size(), [&](size_t idx) {
+        size_t i = relocSections[idx];
+        parseRelocations(sectionHeaders, sectionHeaders[i], *sections[i]);
+      });
+    }
+  }
 
   Section *ehFrameSection = nullptr;
   Section *compactUnwindSection = nullptr;
@@ -1084,7 +1226,7 @@ void ObjFile::parseDebugInfo() {
 
   // We do not re-use the context from getDwarf() here as that function
   // constructs an expensive DWARFCache object.
-  auto *ctx = make<DWARFContext>(
+  auto ctx = std::make_unique<DWARFContext>(
       std::move(dObj), "",
       [&](Error err) {
         warn(toString(this) + ": " + toString(std::move(err)));
@@ -1100,6 +1242,14 @@ void ObjFile::parseDebugInfo() {
   // PR48637.
   auto it = units.begin();
   compileUnit = it != units.end() ? it->get() : nullptr;
+  if (compileUnit)
+    compileUnitContext = std::move(ctx);
+}
+
+void ObjFile::parseDebugInfoIfNeeded() {
+  if (debugSections.empty())
+    return;
+  llvm::call_once(initCompileUnit, [this]() { parseDebugInfo(); });
 }
 
 ArrayRef<data_in_code_entry> ObjFile::getDataInCode() const {
@@ -1521,7 +1671,15 @@ void ObjFile::registerEhFrames(Section &ehFrameSection) {
   ehFrameSection.flags &= ~S_ATTR_LIVE_SUPPORT;
 }
 
-std::string ObjFile::sourceFile() const {
+bool ObjFile::hasCompileUnit() {
+  parseDebugInfoIfNeeded();
+  return compileUnit != nullptr;
+}
+
+std::string ObjFile::sourceFile() {
+  if (!hasCompileUnit())
+    return {};
+
   const char *unitName = compileUnit->getUnitDIE().getShortName();
   // DWARF allows DW_AT_name to be absolute, in which case nothing should be
   // prepended. As for the styles, debug info can contain paths from any OS, not
@@ -2300,7 +2458,11 @@ void BitcodeFile::parse() {
   // Convert LTO Symbols to LLD Symbols in order to perform resolution. The
   // "winning" symbol will then be marked as Prevailing at LTO compilation
   // time.
-  symbols.resize(obj->symbols().size());
+  const size_t symCount = obj->symbols().size();
+  symbols.resize(symCount);
+  static constexpr size_t kSymbolReserveThreshold = 128;
+  if (symCount >= kSymbolReserveThreshold)
+    symtab->reserve(symCount);
 
   // Process defined symbols first. See the comment at the end of
   // ObjFile<>::parseSymbols.
@@ -2313,7 +2475,11 @@ void BitcodeFile::parse() {
 }
 
 void BitcodeFile::parseLazy() {
-  symbols.resize(obj->symbols().size());
+  const size_t symCount = obj->symbols().size();
+  symbols.resize(symCount);
+  static constexpr size_t kSymbolReserveThreshold = 128;
+  if (symCount >= kSymbolReserveThreshold)
+    symtab->reserve(symCount);
   for (const auto &[i, objSym] : llvm::enumerate(obj->symbols())) {
     if (!objSym.isUndefined()) {
       symbols[i] = symtab->addLazyObject(saver().save(objSym.getName()), *this);

@@ -31,6 +31,10 @@
 #include "llvm/Support/TimeProfiler.h"
 #include "llvm/Support/xxhash.h"
 #include <climits>
+#if defined(__unix__) || defined(__APPLE__)
+#include <sys/mman.h>
+#include <unistd.h>
+#endif
 
 #define DEBUG_TYPE "lld"
 
@@ -3029,7 +3033,32 @@ template <class ELFT> void Writer<ELFT>::writeSections() {
 static void
 computeHash(llvm::MutableArrayRef<uint8_t> hashBuf,
             llvm::ArrayRef<uint8_t> data,
-            std::function<void(uint8_t *dest, ArrayRef<uint8_t> arr)> hashFn) {
+            std::function<void(uint8_t *dest, ArrayRef<uint8_t> arr)> hashFn,
+            bool releaseChunkPages = false) {
+  auto markDontNeed = [](ArrayRef<uint8_t> arr) {
+#if defined(MADV_DONTNEED) && (defined(__unix__) || defined(__APPLE__))
+    if (arr.empty())
+      return;
+    static size_t pageSize = [] {
+      long p = ::sysconf(_SC_PAGESIZE);
+      return p > 0 ? static_cast<size_t>(p) : size_t(0);
+    }();
+    if (!pageSize)
+      return;
+
+    uintptr_t begin = reinterpret_cast<uintptr_t>(arr.data());
+    uintptr_t end = begin + arr.size();
+    uintptr_t alignedBegin = ((begin + pageSize - 1) / pageSize) * pageSize;
+    uintptr_t alignedEnd = (end / pageSize) * pageSize;
+    if (alignedBegin >= alignedEnd)
+      return;
+    (void)::madvise(reinterpret_cast<void *>(alignedBegin),
+                    alignedEnd - alignedBegin, MADV_DONTNEED);
+#else
+    (void)arr;
+#endif
+  };
+
   std::vector<ArrayRef<uint8_t>> chunks = split(data, 1024 * 1024);
   const size_t hashesSize = chunks.size() * hashBuf.size();
   std::unique_ptr<uint8_t[]> hashes(new uint8_t[hashesSize]);
@@ -3037,6 +3066,8 @@ computeHash(llvm::MutableArrayRef<uint8_t> hashBuf,
   // Compute hash values.
   parallelFor(0, chunks.size(), [&](size_t i) {
     hashFn(hashes.get() + i * hashBuf.size(), chunks[i]);
+    if (releaseChunkPages)
+      markDontNeed(chunks[i]);
   });
 
   // Write to the final output buffer.
@@ -3069,17 +3100,17 @@ template <class ELFT> void Writer<ELFT>::writeBuildId() {
   case BuildIdKind::Fast:
     computeHash(output, input, [](uint8_t *dest, ArrayRef<uint8_t> arr) {
       write64le(dest, xxh3_64bits(arr));
-    });
+    }, /*releaseChunkPages=*/true);
     break;
   case BuildIdKind::Md5:
     computeHash(output, input, [&](uint8_t *dest, ArrayRef<uint8_t> arr) {
       memcpy(dest, BLAKE3::hash<16>(arr).data(), hashSize);
-    });
+    }, /*releaseChunkPages=*/true);
     break;
   case BuildIdKind::Sha1:
     computeHash(output, input, [&](uint8_t *dest, ArrayRef<uint8_t> arr) {
       memcpy(dest, BLAKE3::hash<20>(arr).data(), hashSize);
-    });
+    }, /*releaseChunkPages=*/true);
     break;
   case BuildIdKind::Uuid:
     if (auto ec = llvm::getRandomBytes(buildId.get(), hashSize))

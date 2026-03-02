@@ -19,6 +19,7 @@
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/SetVector.h"
 #include "llvm/BinaryFormat/MachO.h"
+#include "llvm/DebugInfo/DWARF/DWARFContext.h"
 #include "llvm/DebugInfo/DWARF/DWARFUnit.h"
 #include "llvm/Object/Archive.h"
 #include "llvm/Support/MemoryBuffer.h"
@@ -156,6 +157,11 @@ struct FDE {
   InputSection *lsda;
 };
 
+struct DebugSection {
+  StringRef name;
+  ArrayRef<uint8_t> data;
+};
+
 // .o file
 class ObjFile final : public InputFile {
 public:
@@ -170,7 +176,8 @@ public:
 
   static bool classof(const InputFile *f) { return f->kind() == ObjKind; }
 
-  std::string sourceFile() const;
+  bool hasCompileUnit();
+  std::string sourceFile();
   // Parses line table information for diagnostics. compileUnit should be used
   // for other purposes.
   lld::DWARFCache *getDwarf();
@@ -181,13 +188,16 @@ public:
   const uint32_t modTime;
   bool forceHidden;
   bool builtFromBitcode;
-  std::vector<ConcatInputSection *> debugSections;
+  std::vector<DebugSection> debugSections;
   std::vector<CallGraphEntry> callGraph;
   llvm::DenseMap<ConcatInputSection *, FDE> fdes;
   std::vector<AliasSymbol *> aliases;
+  llvm::SmallVector<Defined *, 0> localNoDeadStripSymbols;
 
 private:
   llvm::once_flag initDwarf;
+  llvm::once_flag initCompileUnit;
+  std::unique_ptr<llvm::DWARFContext> compileUnitContext;
   template <class LP> void parseLazy();
   template <class SectionHeader> void parseSections(ArrayRef<SectionHeader>);
   template <class LP>
@@ -199,6 +209,7 @@ private:
   template <class SectionHeader>
   void parseRelocations(ArrayRef<SectionHeader> sectionHeaders,
                         const SectionHeader &, Section &);
+  void parseDebugInfoIfNeeded();
   void parseDebugInfo();
   void splitEhFrames(ArrayRef<uint8_t> dataArr, Section &ehFrameSection);
   void registerCompactUnwind(Section &compactUnwindSection);

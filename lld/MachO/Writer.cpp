@@ -664,8 +664,50 @@ static void prepareSymbolRelocation(Symbol *sym, const InputSection *isec,
 void Writer::scanRelocations() {
   TimeTraceScope timeScope("Scan relocations");
 
-  // This can't use a for-each loop: It calls treatUndefinedSymbol(), which can
-  // add to inputSections, which invalidates inputSections's iterators.
+  // Phase 1 (parallel): Canonicalize all referents for existing sections.
+  // Each section's relocs are independent so this is safe to parallelize.
+  const size_t phase1Size = inputSections.size();
+  SmallVector<ConcatInputSection *> phase1RelocSections;
+  phase1RelocSections.reserve(inputSections.size());
+  size_t phase1RelocCount = 0;
+  for (ConcatInputSection *isec : inputSections) {
+    if (isec->shouldOmitFromOutput() || isec->relocs.empty())
+      continue;
+    phase1RelocSections.push_back(isec);
+    phase1RelocCount += isec->relocs.size();
+  }
+  auto canonicalizeSectionRelocs = [](ConcatInputSection *isec) {
+    if (isec->shouldOmitFromOutput())
+      return;
+    for (auto it = isec->relocs.begin(); it != isec->relocs.end(); ++it) {
+      lld::macho::Reloc &r = *it;
+      if (auto *referentIsec = r.referent.dyn_cast<InputSection *>())
+        r.referent = referentIsec->canonical();
+      if (target->hasAttr(r.type, RelocAttrBits::SUBTRAHEND)) {
+        ++it;
+        if (auto *referentIsec = it->referent.dyn_cast<InputSection *>())
+          it->referent = referentIsec->canonical();
+      }
+    }
+  };
+  static constexpr size_t kParallelRelocSectionThreshold = 256;
+  static constexpr size_t kParallelRelocCountThreshold = 8192;
+  bool shouldParallelCanonicalize =
+      parallel::strategy.ThreadsRequested != 1 &&
+      (phase1RelocSections.size() >= kParallelRelocSectionThreshold ||
+       phase1RelocCount >= kParallelRelocCountThreshold);
+  if (!shouldParallelCanonicalize) {
+    for (ConcatInputSection *isec : phase1RelocSections)
+      canonicalizeSectionRelocs(isec);
+  } else {
+    parallelForEach(phase1RelocSections, canonicalizeSectionRelocs);
+  }
+
+  // Phase 2 (serial): Handle undefined symbols and prepare symbol relocations.
+  // This must be serial because treatUndefinedSymbol() can add to
+  // inputSections, and prepareSymbolRelocation modifies shared data structures.
+  // Sections added during this phase (i >= phase1Size) need canonicalization
+  // since they weren't processed in Phase 1.
   for (size_t i = 0; i < inputSections.size(); ++i) {
     ConcatInputSection *isec = inputSections[i];
 
@@ -675,20 +717,18 @@ void Writer::scanRelocations() {
     for (auto it = isec->relocs.begin(); it != isec->relocs.end(); ++it) {
       lld::macho::Reloc &r = *it;
 
-      // Canonicalize the referent so that later accesses in Writer won't
-      // have to worry about it.
-      if (auto *referentIsec = r.referent.dyn_cast<InputSection *>())
-        r.referent = referentIsec->canonical();
+      // Canonicalize referents for sections added after Phase 1.
+      if (i >= phase1Size) {
+        if (auto *referentIsec = r.referent.dyn_cast<InputSection *>())
+          r.referent = referentIsec->canonical();
+      }
 
       if (target->hasAttr(r.type, RelocAttrBits::SUBTRAHEND)) {
-        // Skip over the following UNSIGNED relocation -- it's just there as the
-        // minuend, and doesn't have the usual UNSIGNED semantics. We don't want
-        // to emit rebase opcodes for it.
         ++it;
-        // Canonicalize the referent so that later accesses in Writer won't
-        // have to worry about it.
-        if (auto *referentIsec = it->referent.dyn_cast<InputSection *>())
-          it->referent = referentIsec->canonical();
+        if (i >= phase1Size) {
+          if (auto *referentIsec = it->referent.dyn_cast<InputSection *>())
+            it->referent = referentIsec->canonical();
+        }
         continue;
       }
       if (auto *sym = r.referent.dyn_cast<Symbol *>()) {
@@ -720,15 +760,13 @@ static void addNonWeakDefinition(const Defined *defined) {
 
 void Writer::scanSymbols() {
   TimeTraceScope timeScope("Scan symbols");
+  SmallVector<Defined *> globalDefineds;
+  globalDefineds.reserve(symtab->getSymbols().size());
   for (Symbol *sym : symtab->getSymbols()) {
     if (auto *defined = dyn_cast<Defined>(sym)) {
       if (!defined->isLive())
         continue;
-      defined->canonicalize();
-      if (defined->overridesWeakDef)
-        addNonWeakDefinition(defined);
-      if (!defined->isAbsolute() && isCodeSection(defined->isec))
-        in.unwindInfo->addSymbol(defined);
+      globalDefineds.push_back(defined);
     } else if (const auto *dysym = dyn_cast<DylibSymbol>(sym)) {
       // This branch intentionally doesn't check isLive().
       if (dysym->isDynamicLookup())
@@ -741,19 +779,70 @@ void Writer::scanSymbols() {
     }
   }
 
-  for (const InputFile *file : inputFiles) {
-    if (auto *objFile = dyn_cast<ObjFile>(file))
-      for (Symbol *sym : objFile->symbols) {
-        if (auto *defined = dyn_cast_or_null<Defined>(sym)) {
-          if (!defined->isLive())
-            continue;
-          defined->canonicalize();
-          if (!defined->isExternal() && !defined->isAbsolute() &&
-              isCodeSection(defined->isec))
-            in.unwindInfo->addSymbol(defined);
-        }
-      }
+  // Canonicalize global defined symbols. Keep the shared-state updates below
+  // serial.
+  static constexpr size_t kParallelGlobalCanonicalizeThreshold = 4096;
+  if (parallel::strategy.ThreadsRequested != 1 &&
+      globalDefineds.size() >= kParallelGlobalCanonicalizeThreshold) {
+    parallelForEach(globalDefineds,
+                    [](Defined *defined) { defined->canonicalize(); });
+  } else {
+    for (Defined *defined : globalDefineds)
+      defined->canonicalize();
   }
+
+  for (Defined *defined : globalDefineds) {
+    if (defined->overridesWeakDef)
+      addNonWeakDefinition(defined);
+    if (!defined->isAbsolute() && isCodeSection(defined->isec))
+      in.unwindInfo->addSymbol(defined);
+  }
+
+  // Canonicalize local symbols in parallel -- each file's symbols are
+  // independent. Collect unwind symbols per-file then merge serially.
+  SmallVector<const ObjFile *> objFiles;
+  size_t totalObjSymbolCount = 0;
+  for (const InputFile *file : inputFiles)
+    if (auto *objFile = dyn_cast<ObjFile>(file)) {
+      objFiles.push_back(objFile);
+      totalObjSymbolCount += objFile->symbols.size();
+    }
+
+  // Collect local code symbols while canonicalizing, then append to unwind info
+  // serially to avoid shared-state mutation in parallel loops.
+  std::vector<SmallVector<Defined *, 0>> localUnwindSymbols(objFiles.size());
+
+  // Parallel canonicalization pass
+  auto canonicalizeObjLocalSymbols = [&](size_t idx) {
+    const ObjFile *objFile = objFiles[idx];
+    auto &unwindSymbols = localUnwindSymbols[idx];
+    for (Symbol *sym : objFile->symbols)
+      if (auto *defined = dyn_cast_or_null<Defined>(sym))
+        // Global symbols are shared across object files and already
+        // canonicalized in the symtab loop above.
+        if (defined->isLive() && !defined->isExternal()) {
+          defined->canonicalize();
+          if (!defined->isAbsolute() && isCodeSection(defined->isec))
+            unwindSymbols.push_back(defined);
+        }
+  };
+  static constexpr size_t kParallelObjFileThreshold = 32;
+  static constexpr size_t kParallelSymbolCountThreshold = 50000;
+  bool shouldParallelCanonicalize =
+      parallel::strategy.ThreadsRequested != 1 &&
+      (objFiles.size() >= kParallelObjFileThreshold ||
+       totalObjSymbolCount >= kParallelSymbolCountThreshold);
+  if (!shouldParallelCanonicalize) {
+    for (size_t i = 0; i < objFiles.size(); ++i)
+      canonicalizeObjLocalSymbols(i);
+  } else {
+    parallelFor(0, objFiles.size(), canonicalizeObjLocalSymbols);
+  }
+
+  // Serial pass to add unwind symbols (modifies shared unwindInfo)
+  for (const SmallVector<Defined *, 0> &symbols : localUnwindSymbols)
+    for (Defined *defined : symbols)
+      in.unwindInfo->addSymbol(defined);
 }
 
 // TODO: ld64 enforces the old load commands in a few other cases.
@@ -935,9 +1024,38 @@ static void sortSegmentsAndSections() {
   DenseMap<const InputSection *, size_t> isecPriorities =
       priorityBuilder.buildInputSectionPriorities();
 
+  static constexpr size_t kParallelInputSortSectionThreshold = 8;
+  static constexpr size_t kParallelInputSortCountThreshold = 8192;
   uint32_t sectionIndex = 0;
   for (OutputSegment *seg : outputSegments) {
     seg->sortOutputSections();
+
+    if (!isecPriorities.empty()) {
+      SmallVector<ConcatOutputSection *> mergedSections;
+      size_t mergedInputCount = 0;
+      for (OutputSection *osec : seg->getSections())
+        if (auto *merged = dyn_cast<ConcatOutputSection>(osec))
+          if (merged->inputs.size() > 1) {
+            mergedSections.push_back(merged);
+            mergedInputCount += merged->inputs.size();
+          }
+
+      auto sortInputs = [&](ConcatOutputSection *merged) {
+        llvm::stable_sort(merged->inputs, [&](InputSection *a, InputSection *b) {
+          return isecPriorities.lookup(a) > isecPriorities.lookup(b);
+        });
+      };
+      bool shouldParallelSort =
+          parallel::strategy.ThreadsRequested != 1 &&
+          mergedSections.size() >= kParallelInputSortSectionThreshold &&
+          mergedInputCount >= kParallelInputSortCountThreshold;
+      if (shouldParallelSort)
+        parallelForEach(mergedSections, sortInputs);
+      else
+        for (ConcatOutputSection *merged : mergedSections)
+          sortInputs(merged);
+    }
+
     // References from thread-local variable sections are treated as offsets
     // relative to the start of the thread-local data memory area, which
     // is initialized via copying all the TLV data sections (which are all
@@ -959,15 +1077,6 @@ static void sortSegmentsAndSections() {
         if (!firstTLVDataSection)
           firstTLVDataSection = osec;
         osec->align = tlvAlign;
-      }
-
-      if (!isecPriorities.empty()) {
-        if (auto *merged = dyn_cast<ConcatOutputSection>(osec)) {
-          llvm::stable_sort(
-              merged->inputs, [&](InputSection *a, InputSection *b) {
-                return isecPriorities.lookup(a) > isecPriorities.lookup(b);
-              });
-        }
       }
     }
   }
@@ -1096,22 +1205,27 @@ void Writer::finalizeAddresses() {
 
 void Writer::finalizeLinkEditSegment() {
   TimeTraceScope timeScope("Finalize __LINKEDIT segment");
-  // Fill __LINKEDIT contents.
-  std::array<LinkEditSection *, 10> linkEditSections{
-      in.rebase,         in.binding,
-      in.weakBinding,    in.lazyBinding,
-      in.exports,        in.chainedFixups,
-      symtabSection,     indirectSymtabSection,
-      dataInCodeSection, functionStartsSection,
-  };
-  SmallVector<std::shared_future<void>> threadFutures;
-  threadFutures.reserve(linkEditSections.size());
-  for (LinkEditSection *osec : linkEditSections)
+  // Fill __LINKEDIT contents in parallel. Use parallelForEach for lower scheduling overhead.
+  SmallVector<LinkEditSection *, 10> activeSections;
+  for (LinkEditSection *osec : {
+           (LinkEditSection *)in.rebase, (LinkEditSection *)in.binding,
+           (LinkEditSection *)in.weakBinding, (LinkEditSection *)in.lazyBinding,
+           (LinkEditSection *)in.exports, (LinkEditSection *)in.chainedFixups,
+           (LinkEditSection *)symtabSection,
+           (LinkEditSection *)indirectSymtabSection,
+           (LinkEditSection *)dataInCodeSection,
+           (LinkEditSection *)functionStartsSection})
     if (osec)
-      threadFutures.emplace_back(threadPool.async(
-          [](LinkEditSection *osec) { osec->finalizeContents(); }, osec));
-  for (std::shared_future<void> &future : threadFutures)
-    future.wait();
+      activeSections.push_back(osec);
+
+  static constexpr size_t kParallelLinkEditFinalizeThreshold = 4;
+  if (activeSections.size() < kParallelLinkEditFinalizeThreshold) {
+    for (LinkEditSection *osec : activeSections)
+      osec->finalizeContents();
+  } else {
+    parallelForEach(activeSections,
+                    [](LinkEditSection *osec) { osec->finalizeContents(); });
+  }
 
   // Now that __LINKEDIT is filled out, do a proper calculation of its
   // addresses and offsets.
@@ -1175,25 +1289,22 @@ void Writer::applyOptimizationHints() {
   });
 }
 
-// In order to utilize multiple cores, we first split the buffer into chunks,
-// compute a hash for each chunk, and then compute a hash value of the hash
-// values.
+// Compute UUID using a parallel Merkle-tree hash (inspired by mold).
+// Split the output into chunks and hash each chunk in parallel using
+// parallelFor, then combine the hashes.
 void Writer::writeUuid() {
   TimeTraceScope timeScope("Computing UUID");
 
   ArrayRef<uint8_t> data{buffer->getBufferStart(), buffer->getBufferEnd()};
-  std::vector<ArrayRef<uint8_t>> chunks = split(data, 1024 * 1024);
+  // Use 512KB chunks for better parallelism on many-core machines
+  static constexpr size_t kChunkSize = 512 * 1024;
+  std::vector<ArrayRef<uint8_t>> chunks = split(data, kChunkSize);
   // Leave one slot for filename
   std::vector<uint64_t> hashes(chunks.size() + 1);
-  SmallVector<std::shared_future<void>> threadFutures;
-  threadFutures.reserve(chunks.size());
-  for (size_t i = 0; i < chunks.size(); ++i)
-    threadFutures.emplace_back(threadPool.async(
-        [&](size_t j) { hashes[j] = xxh3_64bits(chunks[j]); }, i));
-  for (std::shared_future<void> &future : threadFutures)
-    future.wait();
-  // Append the output filename so that identical binaries with different names
-  // don't get the same UUID.
+
+  parallelFor(0, chunks.size(),
+              [&](size_t i) { hashes[i] = xxh3_64bits(chunks[i]); });
+
   hashes[chunks.size()] = xxh3_64bits(sys::path::filename(config->finalOutput));
   uint64_t digest = xxh3_64bits({reinterpret_cast<uint8_t *>(hashes.data()),
                                  hashes.size() * sizeof(uint64_t)});

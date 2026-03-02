@@ -129,10 +129,7 @@ std::string InputSection::getSourceLocation(uint64_t off) const {
   }
 
   // Try to get the source file's name from the DWARF information.
-  if (obj->compileUnit)
-    return obj->sourceFile();
-
-  return {};
+  return obj->sourceFile();
 }
 
 const Reloc *InputSection::getRelocAt(uint32_t off) const {
@@ -246,7 +243,8 @@ void CStringInputSection::splitIntoPieces() {
     size_t end = s.find(0);
     if (end == StringRef::npos)
       fatal(getLocation(off) + ": string is not null terminated");
-    uint32_t hash = deduplicateLiterals ? xxh3_64bits(s.take_front(end)) : 0;
+    uint32_t hash =
+        deduplicateLiterals ? (xxh3_64bits(s.take_front(end)) & 0x7fffffff) : 0;
     pieces.emplace_back(off, hash);
     size_t size = end + 1; // include null terminator
     s = s.substr(size);

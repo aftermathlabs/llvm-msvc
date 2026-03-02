@@ -23,7 +23,9 @@
 #include "Symbols.h"
 #include "lld/Common/ErrorHandler.h"
 #include "lld/Common/Timer.h"
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/Hashing.h"
+#include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/Parallel.h"
 #include "llvm/Support/TimeProfiler.h"
@@ -58,6 +60,7 @@ private:
                          std::function<void(size_t, size_t)> fn);
 
   void forEachClass(std::function<void(size_t, size_t)> fn);
+  void foldLeafSectionsEarly();
 
   std::vector<SectionChunk *> chunks;
   int cnt = 0;
@@ -104,6 +107,16 @@ bool ICF::isEligible(SectionChunk *c) {
   return !c->keepUnique;
 }
 
+static bool shouldConsiderAssocForICF(const SectionChunk &assoc) {
+  StringRef name = assoc.getSectionName();
+  return !(name.starts_with(".debug") || name == ".gfids$y" ||
+           name == ".giats$y" || name == ".gljmp$y");
+}
+
+static bool hasICFAssocChildren(const SectionChunk *sec) {
+  return llvm::any_of(sec->children(), shouldConsiderAssocForICF);
+}
+
 // Split an equivalence class into smaller classes.
 void ICF::segregate(size_t begin, size_t end, bool constant) {
   while (begin < end) {
@@ -124,7 +137,7 @@ void ICF::segregate(size_t begin, size_t end, bool constant) {
 
     // If we created a group, we need to iterate the main loop again.
     if (mid != end)
-      repeat = true;
+      repeat.store(true, std::memory_order_relaxed);
 
     begin = mid;
   }
@@ -134,13 +147,8 @@ void ICF::segregate(size_t begin, size_t end, bool constant) {
 bool ICF::assocEquals(const SectionChunk *a, const SectionChunk *b) {
   // Ignore associated metadata sections that don't participate in ICF, such as
   // debug info and CFGuard metadata.
-  auto considerForICF = [](const SectionChunk &assoc) {
-    StringRef Name = assoc.getSectionName();
-    return !(Name.starts_with(".debug") || Name == ".gfids$y" ||
-             Name == ".giats$y" || Name == ".gljmp$y");
-  };
-  auto ra = make_filter_range(a->children(), considerForICF);
-  auto rb = make_filter_range(b->children(), considerForICF);
+  auto ra = make_filter_range(a->children(), shouldConsiderAssocForICF);
+  auto rb = make_filter_range(b->children(), shouldConsiderAssocForICF);
   return std::equal(ra.begin(), ra.end(), rb.begin(), rb.end(),
                     [&](const SectionChunk &ia, const SectionChunk &ib) {
                       return ia.eqClass[cnt % 2] == ib.eqClass[cnt % 2];
@@ -220,7 +228,7 @@ void ICF::forEachClassRange(size_t begin, size_t end,
 void ICF::forEachClass(std::function<void(size_t, size_t)> fn) {
   // If the number of sections are too small to use threading,
   // call Fn sequentially.
-  if (chunks.size() < 1024) {
+  if (parallel::strategy.ThreadsRequested == 1 || chunks.size() < 1024) {
     forEachClassRange(0, chunks.size(), fn);
     ++cnt;
     return;
@@ -230,9 +238,17 @@ void ICF::forEachClass(std::function<void(size_t, size_t)> fn) {
   // The sharding must be completed before any calls to Fn are made
   // so that Fn can modify the Chunks in its shard without causing data
   // races.
-  const size_t numShards = 256;
+  size_t numShards =
+      std::max<size_t>(1, parallel::strategy.compute_thread_count() * 4);
+  numShards = std::min<size_t>(numShards, 256);
+  numShards = std::min<size_t>(numShards, chunks.size());
+  if (numShards <= 1) {
+    forEachClassRange(0, chunks.size(), fn);
+    ++cnt;
+    return;
+  }
   size_t step = chunks.size() / numShards;
-  size_t boundaries[numShards + 1];
+  SmallVector<size_t, 257> boundaries(numShards + 1);
   boundaries[0] = 0;
   boundaries[numShards] = chunks.size();
   parallelFor(1, numShards, [&](size_t i) {
@@ -244,6 +260,74 @@ void ICF::forEachClass(std::function<void(size_t, size_t)> fn) {
     }
   });
   ++cnt;
+}
+
+// Early-merge relocation-free sections that have no ICF-relevant associative
+// children. These nodes do not participate in relocation graph propagation.
+void ICF::foldLeafSectionsEarly() {
+  // Keep verbose ICF diagnostics stable by letting the regular merge path emit
+  // all reported folds.
+  if (ctx.config.verbose)
+    return;
+  if (chunks.size() < 2)
+    return;
+
+  struct LeafCandidate {
+    SectionChunk *chunk;
+    uint64_t hash;
+  };
+
+  SmallVector<LeafCandidate, 0> leaves;
+  leaves.reserve(chunks.size());
+  for (SectionChunk *sc : chunks) {
+    if (sc->getOutputCharacteristics() & llvm::COFF::IMAGE_SCN_MEM_EXECUTE)
+      continue;
+    StringRef outSecName = sc->getSectionName().split('$').first;
+    if (outSecName == ".pdata" || outSecName == ".xdata")
+      continue;
+    if (sc->eqClass[0] == 0 && sc->relocsSize == 0 && !hasICFAssocChildren(sc))
+      leaves.push_back({sc, xxh3_64bits(sc->getContents())});
+  }
+  if (leaves.size() < 2)
+    return;
+
+  llvm::stable_sort(leaves, [](const LeafCandidate &a, const LeafCandidate &b) {
+    return a.hash < b.hash;
+  });
+
+  DenseSet<SectionChunk *> removed;
+  DenseSet<SectionChunk *> loggedSelected;
+  for (size_t i = 0; i < leaves.size();) {
+    uint64_t hash = leaves[i].hash;
+    size_t j = i + 1;
+    while (j < leaves.size() && leaves[j].hash == hash)
+      ++j;
+
+    SmallVector<SectionChunk *, 0> leaders;
+    leaders.reserve(j - i);
+    for (size_t k = i; k < j; ++k) {
+      SectionChunk *sc = leaves[k].chunk;
+      bool merged = false;
+      for (SectionChunk *leader : leaders) {
+        if (!equalsConstant(leader, sc))
+          continue;
+        if (loggedSelected.insert(leader).second)
+          log("Selected " + leader->getDebugName());
+        log("  Removed " + sc->getDebugName());
+        leader->replace(sc);
+        removed.insert(sc);
+        merged = true;
+        break;
+      }
+      if (!merged)
+        leaders.push_back(sc);
+    }
+    i = j;
+  }
+
+  if (removed.empty())
+    return;
+  llvm::erase_if(chunks, [&](SectionChunk *sc) { return removed.count(sc); });
 }
 
 // Merge identical COMDAT sections.
@@ -271,39 +355,81 @@ void ICF::run() {
       for (SectionChunk *sc : mc->sections)
         sc->eqClass[0] = nextId++;
 
+  foldLeafSectionsEarly();
+
   // Initially, we use hash values to partition sections.
   parallelForEach(chunks, [&](SectionChunk *sc) {
     sc->eqClass[0] = xxh3_64bits(sc->getContents());
   });
 
-  // Combine the hashes of the sections referenced by each section into its
-  // hash.
-  for (unsigned cnt = 0; cnt != 2; ++cnt) {
-    parallelForEach(chunks, [&](SectionChunk *sc) {
-      uint32_t hash = sc->eqClass[cnt % 2];
+  // Iteratively combine relocation target hashes until they stabilize,
+  // instead of using a fixed number of rounds.
+  unsigned latestHashSlot = 0;
+  unsigned hashPass = 0;
+  for (;; ++hashPass) {
+    const unsigned currSlot = hashPass % 2;
+    const unsigned nextSlot = (hashPass + 1) % 2;
+    auto hashOne = [&](SectionChunk *sc) {
+      uint32_t hash = sc->eqClass[currSlot];
       for (Symbol *b : sc->symbols())
         if (auto *sym = dyn_cast_or_null<DefinedRegular>(b))
-          hash += sym->getChunk()->eqClass[cnt % 2];
-      // Set MSB to 1 to avoid collisions with non-hash classes.
-      sc->eqClass[(cnt + 1) % 2] = hash | (1U << 31);
+          hash = hash * 31 + sym->getChunk()->eqClass[currSlot];
+      uint32_t nextHash = hash | (1U << 31);
+      bool changed = nextHash != sc->eqClass[currSlot];
+      sc->eqClass[nextSlot] = nextHash;
+      return changed;
+    };
+
+    bool changedAny = false;
+    static constexpr size_t kParallelHashPassThreshold = 1024;
+    if (parallel::strategy.ThreadsRequested != 1 &&
+        chunks.size() >= kParallelHashPassThreshold) {
+      size_t numChunks =
+          std::max<size_t>(1, parallel::strategy.compute_thread_count() * 4);
+      numChunks = std::min<size_t>(numChunks, chunks.size());
+      std::vector<uint8_t> changedByChunk(numChunks, 0);
+      parallelFor(0, numChunks, [&](size_t chunkIdx) {
+        size_t begin = chunkIdx * chunks.size() / numChunks;
+        size_t end = (chunkIdx + 1) * chunks.size() / numChunks;
+        bool localChanged = false;
+        for (size_t i = begin; i < end; ++i)
+          localChanged |= hashOne(chunks[i]);
+        changedByChunk[chunkIdx] = localChanged ? 1 : 0;
+      });
+      changedAny = llvm::any_of(changedByChunk, [](uint8_t v) { return v; });
+    } else {
+      for (SectionChunk *sc : chunks)
+        changedAny |= hashOne(sc);
+    }
+
+    latestHashSlot = nextSlot;
+    if (hashPass >= 1 && !changedAny)
+      break;
+    if (hashPass >= 7)
+      break;
+  }
+  if (latestHashSlot != 0) {
+    parallelForEach(chunks, [latestHashSlot](SectionChunk *sc) {
+      sc->eqClass[0] = sc->eqClass[latestHashSlot];
     });
   }
 
   // From now on, sections in Chunks are ordered so that sections in
   // the same group are consecutive in the vector.
-  llvm::stable_sort(chunks, [](const SectionChunk *a, const SectionChunk *b) {
+  auto byEqClass = [](const SectionChunk *a, const SectionChunk *b) {
     return a->eqClass[0] < b->eqClass[0];
-  });
+  };
+  llvm::stable_sort(chunks, byEqClass);
 
   // Compare static contents and assign unique IDs for each static content.
   forEachClass([&](size_t begin, size_t end) { segregate(begin, end, true); });
 
   // Split groups by comparing relocations until convergence is obtained.
   do {
-    repeat = false;
+    repeat.store(false, std::memory_order_relaxed);
     forEachClass(
         [&](size_t begin, size_t end) { segregate(begin, end, false); });
-  } while (repeat);
+  } while (repeat.load(std::memory_order_relaxed));
 
   log("ICF needed " + Twine(cnt) + " iterations");
 

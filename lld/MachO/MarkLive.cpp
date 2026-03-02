@@ -14,9 +14,12 @@
 #include "UnwindInfoSection.h"
 
 #include "lld/Common/ErrorHandler.h"
+#include "llvm/Support/Parallel.h"
 #include "llvm/Support/TimeProfiler.h"
 
 #include "mach-o/compact_unwind_encoding.h"
+
+#include <algorithm>
 
 namespace lld::macho {
 
@@ -144,34 +147,96 @@ MarkLiveImpl<RecordWhyLive>::makeEntry(
 
 template <bool RecordWhyLive>
 void MarkLiveImpl<RecordWhyLive>::markTransitively() {
+  // S_ATTR_LIVE_SUPPORT sections are discovered from this stable subset.
+  SmallVector<ConcatInputSection *, 0> liveSupportSections;
+  liveSupportSections.reserve(inputSections.size());
+  for (ConcatInputSection *isec : inputSections)
+    if ((isec->getFlags() & S_ATTR_LIVE_SUPPORT) && !isec->live)
+      liveSupportSections.push_back(isec);
+
+  auto processEntry = [&](WorklistEntry *entry) {
+    // Entries that get placed onto the worklist always contain
+    // ConcatInputSections. `WhyLiveEntry::prev` may point to entries that
+    // contain other types of InputSections (due to S_ATTR_LIVE_SUPPORT), but
+    // those entries should never be pushed onto the worklist.
+    auto *isec = cast<ConcatInputSection>(getInputSection(entry));
+    assert(isec->live && "We mark as live when pushing onto the worklist!");
+
+    // Mark all symbols listed in the relocation table for this section.
+    for (const Reloc &r : isec->relocs) {
+      if (auto *s = r.referent.dyn_cast<Symbol *>())
+        addSym(s, entry);
+      else
+        enqueue(r.referent.get<InputSection *>(), r.addend, entry);
+    }
+    for (Defined *d : getInputSection(entry)->symbols)
+      addSym(d, entry);
+  };
+
+  auto processWorklist = [&]() {
+    static constexpr size_t kParallelTransitWorklistThreshold = 512;
+    while (!worklist.empty()) {
+      // Keep -why_live on the existing serial path to preserve its output
+      // stability, while accelerating the default mark-live traversal.
+      if constexpr (!RecordWhyLive) {
+        if (parallel::strategy.ThreadsRequested != 1 &&
+            worklist.size() >= kParallelTransitWorklistThreshold) {
+          struct PendingRefs {
+            SmallVector<std::pair<InputSection *, uint64_t>, 0> sections;
+            SmallVector<Symbol *, 0> symbols;
+          };
+
+          SmallVector<WorklistEntry *, 0> batch;
+          batch.reserve(worklist.size());
+          while (!worklist.empty())
+            batch.push_back(worklist.pop_back_val());
+
+          std::vector<PendingRefs> pending(batch.size());
+          parallelFor(0, batch.size(), [&](size_t i) {
+            WorklistEntry *entry = batch[i];
+            auto *isec = cast<ConcatInputSection>(getInputSection(entry));
+            PendingRefs &refs = pending[i];
+            refs.sections.reserve(isec->relocs.size());
+            refs.symbols.reserve(isec->symbols.size());
+
+            for (const Reloc &r : isec->relocs) {
+              if (auto *s = r.referent.dyn_cast<Symbol *>())
+                refs.symbols.push_back(s);
+              else
+                refs.sections.emplace_back(r.referent.get<InputSection *>(),
+                                           r.addend);
+            }
+            for (Defined *d : getInputSection(entry)->symbols)
+              refs.symbols.push_back(d);
+          });
+
+          // Commit in deterministic order to avoid concurrent mutation of live
+          // bits and symbol liveness state.
+          for (size_t i = 0; i < batch.size(); ++i) {
+            WorklistEntry *entry = batch[i];
+            for (const auto &[isec, off] : pending[i].sections)
+              enqueue(isec, off, entry);
+            for (Symbol *sym : pending[i].symbols)
+              addSym(sym, entry);
+          }
+          continue;
+        }
+      }
+
+      WorklistEntry *entry = worklist.pop_back_val();
+      processEntry(entry);
+    }
+  };
+
   do {
     // Mark things reachable from GC roots as live.
-    while (!worklist.empty()) {
-      WorklistEntry *entry = worklist.pop_back_val();
-      // Entries that get placed onto the worklist always contain
-      // ConcatInputSections. `WhyLiveEntry::prev` may point to entries that
-      // contain other types of InputSections (due to S_ATTR_LIVE_SUPPORT), but
-      // those entries should never be pushed onto the worklist.
-      auto *isec = cast<ConcatInputSection>(getInputSection(entry));
-      assert(isec->live && "We mark as live when pushing onto the worklist!");
-
-      // Mark all symbols listed in the relocation table for this section.
-      for (const Reloc &r : isec->relocs) {
-        if (auto *s = r.referent.dyn_cast<Symbol *>())
-          addSym(s, entry);
-        else
-          enqueue(r.referent.get<InputSection *>(), r.addend, entry);
-      }
-      for (Defined *d : getInputSection(entry)->symbols)
-        addSym(d, entry);
-    }
+    processWorklist();
 
     // S_ATTR_LIVE_SUPPORT sections are live if they point _to_ a live
     // section. Process them in a second pass.
-    for (ConcatInputSection *isec : inputSections) {
-      // FIXME: Check if copying all S_ATTR_LIVE_SUPPORT sections into a
-      // separate vector and only walking that here is faster.
-      if (!(isec->getFlags() & S_ATTR_LIVE_SUPPORT) || isec->live)
+    size_t pendingCount = 0;
+    for (ConcatInputSection *isec : liveSupportSections) {
+      if (isec->live)
         continue;
 
       for (const Reloc &r : isec->relocs) {
@@ -188,7 +253,10 @@ void MarkLiveImpl<RecordWhyLive>::markTransitively() {
             enqueue(isec, 0, makeEntry(referentIsec, nullptr));
         }
       }
+      if (!isec->live)
+        liveSupportSections[pendingCount++] = isec;
     }
+    liveSupportSections.resize(pendingCount);
 
     // S_ATTR_LIVE_SUPPORT could have marked additional sections live,
     // which in turn could mark additional S_ATTR_LIVE_SUPPORT sections live.
@@ -210,68 +278,120 @@ void markLive() {
   // Add GC roots.
   if (config->entry)
     marker->addSym(config->entry);
-  for (Symbol *sym : symtab->getSymbols()) {
-    if (auto *defined = dyn_cast<Defined>(sym)) {
-      // -exported_symbol(s_list)
-      if (!config->exportedSymbols.empty() &&
-          config->exportedSymbols.match(defined->getName())) {
-        // NOTE: Even though exporting private externs is an ill-defined
-        // operation, we are purposely not checking for privateExtern in
-        // order to follow ld64's behavior of treating all exported private
-        // extern symbols as live, irrespective of whether they are autohide.
-        marker->addSym(defined);
-        continue;
-      }
+  ArrayRef<Symbol *> symbols = symtab->getSymbols();
+  bool hasExportedSymbols = !config->exportedSymbols.empty();
+  bool externsAreRoots =
+      config->outputType != MH_EXECUTE || config->exportDynamic;
+  auto isRootSymbol = [&](Symbol *sym) {
+    auto *defined = dyn_cast<Defined>(sym);
+    if (!defined)
+      return false;
+    // -exported_symbol(s_list)
+    if (hasExportedSymbols && config->exportedSymbols.match(defined->getName()))
+      return true;
+    // public symbols explicitly marked .no_dead_strip
+    if (defined->referencedDynamically || defined->noDeadStrip)
+      return true;
+    // In dylibs and bundles and in executables with -export_dynamic,
+    // all external functions are GC roots.
+    //
+    // FIXME: When we implement these flags, make symbols from them GC roots:
+    // * -reexported_symbol(s_list)
+    // * -alias_list
+    // * -init
+    return externsAreRoots && !defined->privateExtern;
+  };
 
-      // public symbols explicitly marked .no_dead_strip
-      if (defined->referencedDynamically || defined->noDeadStrip) {
-        marker->addSym(defined);
-        continue;
-      }
-
-      // FIXME: When we implement these flags, make symbols from them GC
-      // roots:
-      // * -reexported_symbol(s_list)
-      // * -alias_list
-      // * -init
-
-      // In dylibs and bundles and in executables with -export_dynamic,
-      // all external functions are GC roots.
-      bool externsAreRoots =
-          config->outputType != MH_EXECUTE || config->exportDynamic;
-      if (externsAreRoots && !defined->privateExtern) {
-        marker->addSym(defined);
-        continue;
-      }
-    }
+  static constexpr size_t kParallelRootScanThreshold = 4096;
+  static constexpr size_t kRootScanChunkSize = 2048;
+  if (parallel::strategy.ThreadsRequested != 1 &&
+      symbols.size() >= kParallelRootScanThreshold) {
+    size_t numChunks = (symbols.size() + kRootScanChunkSize - 1) /
+                       kRootScanChunkSize;
+    std::vector<SmallVector<Symbol *, 0>> rootsByChunk(numChunks);
+    parallelFor(0, numChunks, [&](size_t chunkIndex) {
+      size_t begin = chunkIndex * kRootScanChunkSize;
+      size_t end = std::min(begin + kRootScanChunkSize, symbols.size());
+      auto &roots = rootsByChunk[chunkIndex];
+      for (size_t i = begin; i < end; ++i)
+        if (isRootSymbol(symbols[i]))
+          roots.push_back(symbols[i]);
+    });
+    for (SmallVector<Symbol *, 0> &roots : rootsByChunk)
+      for (Symbol *sym : roots)
+        marker->addSym(sym);
+  } else {
+    for (Symbol *sym : symbols)
+      if (isRootSymbol(sym))
+        marker->addSym(sym);
   }
   // -u symbols
   for (Symbol *sym : config->explicitUndefineds)
     marker->addSym(sym);
-  // local symbols explicitly marked .no_dead_strip
+  // Local symbols explicitly marked .no_dead_strip.
+  // ObjFile records these during symbol parsing to avoid scanning every local
+  // symbol here.
   for (const InputFile *file : inputFiles)
     if (auto *objFile = dyn_cast<ObjFile>(file))
-      for (Symbol *sym : objFile->symbols)
-        if (auto *defined = dyn_cast_or_null<Defined>(sym))
-          if (!defined->isExternal() && defined->noDeadStrip)
-            marker->addSym(defined);
+      for (Defined *defined : objFile->localNoDeadStripSymbols)
+        marker->addSym(defined);
   if (auto *stubBinder =
           dyn_cast_or_null<DylibSymbol>(symtab->find("dyld_stub_binder")))
     marker->addSym(stubBinder);
-  for (ConcatInputSection *isec : inputSections) {
-    // Sections marked no_dead_strip
-    if (isec->getFlags() & S_ATTR_NO_DEAD_STRIP) {
-      marker->enqueue(isec, 0);
-      continue;
+  auto isRootInputSection = [](const ConcatInputSection *isec) {
+    uint32_t flags = isec->getFlags();
+    if (flags & S_ATTR_NO_DEAD_STRIP)
+      return true;
+    uint8_t type = sectionType(flags);
+    return type == S_MOD_INIT_FUNC_POINTERS ||
+           type == S_MOD_TERM_FUNC_POINTERS;
+  };
+  static constexpr size_t kParallelRootSectionScanThreshold = 4096;
+  static constexpr size_t kRootSectionScanChunkSize = 2048;
+  if (parallel::strategy.ThreadsRequested != 1 &&
+      inputSections.size() >= kParallelRootSectionScanThreshold) {
+    size_t numChunks =
+        (inputSections.size() + kRootSectionScanChunkSize - 1) /
+        kRootSectionScanChunkSize;
+    std::vector<SmallVector<ConcatInputSection *, 0>> rootsByChunk(numChunks);
+    parallelFor(0, numChunks, [&](size_t chunkIndex) {
+      size_t begin = chunkIndex * kRootSectionScanChunkSize;
+      size_t end = std::min(begin + kRootSectionScanChunkSize,
+                            inputSections.size());
+      auto &roots = rootsByChunk[chunkIndex];
+      for (size_t i = begin; i < end; ++i) {
+        ConcatInputSection *isec = inputSections[i];
+        if (isRootInputSection(isec))
+          roots.push_back(isec);
+      }
+    });
+    for (SmallVector<ConcatInputSection *, 0> &roots : rootsByChunk) {
+      for (ConcatInputSection *isec : roots) {
+        if (isec->getFlags() & S_ATTR_NO_DEAD_STRIP) {
+          marker->enqueue(isec, 0);
+          continue;
+        }
+        assert(!config->emitInitOffsets ||
+               sectionType(isec->getFlags()) != S_MOD_INIT_FUNC_POINTERS);
+        marker->enqueue(isec, 0);
+      }
     }
+  } else {
+    for (ConcatInputSection *isec : inputSections) {
+      // Sections marked no_dead_strip
+      if (isec->getFlags() & S_ATTR_NO_DEAD_STRIP) {
+        marker->enqueue(isec, 0);
+        continue;
+      }
 
-    // mod_init_funcs, mod_term_funcs sections
-    if (sectionType(isec->getFlags()) == S_MOD_INIT_FUNC_POINTERS ||
-        sectionType(isec->getFlags()) == S_MOD_TERM_FUNC_POINTERS) {
-      assert(!config->emitInitOffsets ||
-             sectionType(isec->getFlags()) != S_MOD_INIT_FUNC_POINTERS);
-      marker->enqueue(isec, 0);
-      continue;
+      // mod_init_funcs, mod_term_funcs sections
+      if (sectionType(isec->getFlags()) == S_MOD_INIT_FUNC_POINTERS ||
+          sectionType(isec->getFlags()) == S_MOD_TERM_FUNC_POINTERS) {
+        assert(!config->emitInitOffsets ||
+               sectionType(isec->getFlags()) != S_MOD_INIT_FUNC_POINTERS);
+        marker->enqueue(isec, 0);
+        continue;
+      }
     }
   }
 

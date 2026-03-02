@@ -169,6 +169,15 @@ private:
   uint64_t cueEndBoundary = 0;
 };
 
+template <typename T, typename Compare>
+static void sortMaybeParallel(std::vector<T> &v, Compare comp,
+                              size_t parallelThreshold) {
+  if (parallel::strategy.ThreadsRequested == 1 || v.size() < parallelThreshold)
+    llvm::sort(v, comp);
+  else
+    parallelSort(v, comp);
+}
+
 UnwindInfoSection::UnwindInfoSection()
     : SyntheticSection(segment_names::text, section_names::unwindInfo) {
   align = 4;
@@ -458,9 +467,13 @@ void UnwindInfoSectionImpl::finalize() {
   // vector of indices to entries and sort & fold that instead.
   cuIndices.resize(cuEntries.size());
   std::iota(cuIndices.begin(), cuIndices.end(), 0);
-  llvm::sort(cuIndices, [&](size_t a, size_t b) {
-    return cuEntries[a].functionAddress < cuEntries[b].functionAddress;
-  });
+  static constexpr size_t kParallelCuIndicesSortThreshold = 16384;
+  sortMaybeParallel(
+      cuIndices,
+      [&](size_t a, size_t b) {
+        return cuEntries[a].functionAddress < cuEntries[b].functionAddress;
+      },
+      kParallelCuIndicesSortThreshold);
 
   // Record the ending boundary before we fold the entries.
   cueEndBoundary = cuEntries[cuIndices.back()].functionAddress +
@@ -519,15 +532,18 @@ void UnwindInfoSectionImpl::finalize() {
   // Make a vector of encodings, sorted by descending frequency
   for (const auto &frequency : encodingFrequencies)
     commonEncodings.emplace_back(frequency);
-  llvm::sort(commonEncodings,
-             [](const std::pair<compact_unwind_encoding_t, size_t> &a,
-                const std::pair<compact_unwind_encoding_t, size_t> &b) {
-               if (a.second == b.second)
-                 // When frequencies match, secondarily sort on encoding
-                 // to maintain parity with validate-unwind-info.py
-                 return a.first > b.first;
-               return a.second > b.second;
-             });
+  static constexpr size_t kParallelEncodingSortThreshold = 1024;
+  sortMaybeParallel(
+      commonEncodings,
+      [](const std::pair<compact_unwind_encoding_t, size_t> &a,
+         const std::pair<compact_unwind_encoding_t, size_t> &b) {
+        if (a.second == b.second)
+          // When frequencies match, secondarily sort on encoding
+          // to maintain parity with validate-unwind-info.py
+          return a.first > b.first;
+        return a.second > b.second;
+      },
+      kParallelEncodingSortThreshold);
 
   // Truncate the vector to 127 elements.
   // Common encoding indexes are limited to 0..126, while encoding

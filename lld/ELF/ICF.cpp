@@ -80,6 +80,7 @@
 #include "SymbolTable.h"
 #include "Symbols.h"
 #include "SyntheticSections.h"
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/BinaryFormat/ELF.h"
 #include "llvm/Object/ELF.h"
 #include "llvm/Support/Parallel.h"
@@ -87,6 +88,7 @@
 #include "llvm/Support/xxhash.h"
 #include <algorithm>
 #include <atomic>
+#include <vector>
 
 using namespace llvm;
 using namespace llvm::ELF;
@@ -119,6 +121,7 @@ private:
                          llvm::function_ref<void(size_t, size_t)> fn);
 
   void forEachClass(llvm::function_ref<void(size_t, size_t)> fn);
+  void foldLeafSectionsEarly();
 
   SmallVector<InputSection *, 0> sections;
 
@@ -226,7 +229,7 @@ void ICF<ELFT>::segregate(size_t begin, size_t end, uint32_t eqClassBase,
 
     // If we created a group, we need to iterate the main loop again.
     if (mid != end)
-      repeat = true;
+      repeat.store(true, std::memory_order_relaxed);
 
     begin = mid;
   }
@@ -418,9 +421,17 @@ void ICF<ELFT>::forEachClass(llvm::function_ref<void(size_t, size_t)> fn) {
   // The sharding must be completed before any calls to Fn are made
   // so that Fn can modify the Chunks in its shard without causing data
   // races.
-  const size_t numShards = 256;
+  size_t numShards =
+      std::max<size_t>(1, parallel::strategy.compute_thread_count() * 4);
+  numShards = std::min<size_t>(numShards, 256);
+  numShards = std::min<size_t>(numShards, sections.size());
+  if (numShards <= 1) {
+    forEachClassRange(0, sections.size(), fn);
+    ++cnt;
+    return;
+  }
   size_t step = sections.size() / numShards;
-  size_t boundaries[numShards + 1];
+  SmallVector<size_t, 257> boundaries(numShards + 1);
   boundaries[0] = 0;
   boundaries[numShards] = sections.size();
 
@@ -438,22 +449,95 @@ void ICF<ELFT>::forEachClass(llvm::function_ref<void(size_t, size_t)> fn) {
 // Combine the hashes of the sections referenced by the given section into its
 // hash.
 template <class ELFT, class RelTy>
-static void combineRelocHashes(unsigned cnt, InputSection *isec,
+static bool combineRelocHashes(unsigned cnt, InputSection *isec,
                                ArrayRef<RelTy> rels) {
   uint32_t hash = isec->eqClass[cnt % 2];
   for (RelTy rel : rels) {
     Symbol &s = isec->template getFile<ELFT>()->getRelocTargetSym(rel);
     if (auto *d = dyn_cast<Defined>(&s))
       if (auto *relSec = dyn_cast_or_null<InputSection>(d->section))
-        hash += relSec->eqClass[cnt % 2];
+        hash = hash * 31 + relSec->eqClass[cnt % 2];
   }
   // Set MSB to 1 to avoid collisions with unique IDs.
-  isec->eqClass[(cnt + 1) % 2] = hash | (1U << 31);
+  uint32_t nextHash = hash | (1U << 31);
+  bool changed = nextHash != isec->eqClass[cnt % 2];
+  isec->eqClass[(cnt + 1) % 2] = nextHash;
+  return changed;
 }
 
 static void print(const Twine &s) {
   if (config->printIcfSections)
     message(s);
+}
+
+// Early-merge relocation-free sections. They do not participate in relocation
+// graph propagation, so removing duplicates here reduces later ICF work.
+template <class ELFT> void ICF<ELFT>::foldLeafSectionsEarly() {
+  // Keep --print-icf-sections output deterministic and compatible with
+  // existing diagnostics/tests by letting the regular merge path handle all
+  // reported folds.
+  if (config->printIcfSections)
+    return;
+  if (sections.size() < 2)
+    return;
+
+  struct LeafCandidate {
+    InputSection *sec;
+    uint64_t hash;
+  };
+
+  SmallVector<LeafCandidate, 0> leafSections;
+  leafSections.reserve(sections.size());
+  for (InputSection *s : sections) {
+    if (s->flags & SHF_EXECINSTR)
+      continue;
+    const RelsOrRelas<ELFT> rels = s->template relsOrRelas<ELFT>();
+    if (rels.rels.empty() && rels.relas.empty())
+      leafSections.push_back({s, xxh3_64bits(s->content())});
+  }
+  if (leafSections.size() < 2)
+    return;
+
+  llvm::stable_sort(leafSections, [](const LeafCandidate &a,
+                                     const LeafCandidate &b) {
+    return a.hash < b.hash;
+  });
+
+  DenseSet<InputSection *> removed;
+  DenseSet<InputSection *> printedSelected;
+  for (size_t i = 0; i < leafSections.size();) {
+    uint64_t hash = leafSections[i].hash;
+    size_t j = i + 1;
+    while (j < leafSections.size() && leafSections[j].hash == hash)
+      ++j;
+
+    SmallVector<InputSection *, 0> leaders;
+    leaders.reserve(j - i);
+    for (size_t k = i; k < j; ++k) {
+      InputSection *s = leafSections[k].sec;
+      bool merged = false;
+      for (InputSection *leader : leaders) {
+        if (!equalsConstant(leader, s))
+          continue;
+        if (printedSelected.insert(leader).second)
+          print("selected section " + toString(leader));
+        print("  removing identical section " + toString(s));
+        leader->replace(s);
+        for (InputSection *isec : s->dependentSections)
+          isec->markDead();
+        removed.insert(s);
+        merged = true;
+        break;
+      }
+      if (!merged)
+        leaders.push_back(s);
+    }
+    i = j;
+  }
+
+  if (removed.empty())
+    return;
+  llvm::erase_if(sections, [&](InputSection *s) { return removed.count(s); });
 }
 
 // The main function of ICF.
@@ -491,30 +575,71 @@ template <class ELFT> void ICF<ELFT>::run() {
     }
   }
 
+  foldLeafSectionsEarly();
+
   // Initially, we use hash values to partition sections.
   parallelForEach(sections, [&](InputSection *s) {
     // Set MSB to 1 to avoid collisions with unique IDs.
     s->eqClass[0] = xxh3_64bits(s->content()) | (1U << 31);
   });
 
-  // Perform 2 rounds of relocation hash propagation. 2 is an empirical value to
-  // reduce the average sizes of equivalence classes, i.e. segregate() which has
-  // a large time complexity will have less work to do.
-  for (unsigned cnt = 0; cnt != 2; ++cnt) {
-    parallelForEach(sections, [&](InputSection *s) {
-      const RelsOrRelas<ELFT> rels = s->template relsOrRelas<ELFT>();
-      if (rels.areRelocsRel())
-        combineRelocHashes<ELFT>(cnt, s, rels.rels);
-      else
-        combineRelocHashes<ELFT>(cnt, s, rels.relas);
+  // Iteratively combine relocation target hashes until they stabilize,
+  // instead of using a fixed number of rounds.
+  unsigned latestHashSlot = 0;
+  unsigned hashPass = 0;
+  for (;; ++hashPass) {
+    const unsigned nextSlot = (hashPass + 1) % 2;
+    bool changedAny = false;
+    static constexpr size_t kParallelHashPassThreshold = 1024;
+    if (parallel::strategy.ThreadsRequested != 1 &&
+        sections.size() >= kParallelHashPassThreshold) {
+      size_t numChunks =
+          std::max<size_t>(1, parallel::strategy.compute_thread_count() * 4);
+      numChunks = std::min<size_t>(numChunks, sections.size());
+      std::vector<uint8_t> changedByChunk(numChunks, 0);
+      parallelFor(0, numChunks, [&](size_t chunkIdx) {
+        size_t begin = chunkIdx * sections.size() / numChunks;
+        size_t end = (chunkIdx + 1) * sections.size() / numChunks;
+        bool localChanged = false;
+        for (size_t i = begin; i < end; ++i) {
+          InputSection *s = sections[i];
+          const RelsOrRelas<ELFT> rels = s->template relsOrRelas<ELFT>();
+          if (rels.areRelocsRel())
+            localChanged |= combineRelocHashes<ELFT>(hashPass, s, rels.rels);
+          else
+            localChanged |= combineRelocHashes<ELFT>(hashPass, s, rels.relas);
+        }
+        changedByChunk[chunkIdx] = localChanged ? 1 : 0;
+      });
+      changedAny = llvm::any_of(changedByChunk, [](uint8_t v) { return v; });
+    } else {
+      for (InputSection *s : sections) {
+        const RelsOrRelas<ELFT> rels = s->template relsOrRelas<ELFT>();
+        if (rels.areRelocsRel())
+          changedAny |= combineRelocHashes<ELFT>(hashPass, s, rels.rels);
+        else
+          changedAny |= combineRelocHashes<ELFT>(hashPass, s, rels.relas);
+      }
+    }
+
+    latestHashSlot = nextSlot;
+    if (hashPass >= 1 && !changedAny)
+      break;
+    if (hashPass >= 7)
+      break;
+  }
+  if (latestHashSlot != 0) {
+    parallelForEach(sections, [latestHashSlot](InputSection *s) {
+      s->eqClass[0] = s->eqClass[latestHashSlot];
     });
   }
 
   // From now on, sections in Sections vector are ordered so that sections
   // in the same equivalence class are consecutive in the vector.
-  llvm::stable_sort(sections, [](const InputSection *a, const InputSection *b) {
+  auto byEqClass = [](const InputSection *a, const InputSection *b) {
     return a->eqClass[0] < b->eqClass[0];
-  });
+  };
+  llvm::stable_sort(sections, byEqClass);
 
   // Compare static contents and assign unique equivalence class IDs for each
   // static content. Use a base offset for these IDs to ensure no overlap with
@@ -526,11 +651,11 @@ template <class ELFT> void ICF<ELFT>::run() {
 
   // Split groups by comparing relocations until convergence is obtained.
   do {
-    repeat = false;
+    repeat.store(false, std::memory_order_relaxed);
     forEachClass([&](size_t begin, size_t end) {
       segregate(begin, end, eqClassBase, false);
     });
-  } while (repeat);
+  } while (repeat.load(std::memory_order_relaxed));
 
   log("ICF needed " + Twine(cnt) + " iterations");
 

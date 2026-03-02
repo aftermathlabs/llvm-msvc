@@ -28,6 +28,15 @@ Symbol *SymbolTable::find(CachedHashStringRef cachedName) {
   return symVector[it->second];
 }
 
+void SymbolTable::reserve(size_t additional) {
+  if (additional == 0)
+    return;
+  size_t required = symVector.size() + additional;
+  if (required > symVector.capacity())
+    symVector.reserve(required);
+  symMap.reserve(required);
+}
+
 std::pair<Symbol *, bool> SymbolTable::insert(StringRef name,
                                               const InputFile *file) {
   auto p = symMap.insert({CachedHashStringRef(name), (int)symVector.size()});

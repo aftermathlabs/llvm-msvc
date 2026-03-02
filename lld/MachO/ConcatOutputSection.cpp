@@ -15,6 +15,7 @@
 #include "Target.h"
 #include "lld/Common/CommonLinkerContext.h"
 #include "llvm/BinaryFormat/MachO.h"
+#include "llvm/Support/Parallel.h"
 #include "llvm/Support/ScopedPrinter.h"
 #include "llvm/Support/TimeProfiler.h"
 
@@ -361,24 +362,41 @@ void TextOutputSection::finalize() {
 }
 
 void ConcatOutputSection::writeTo(uint8_t *buf) const {
-  for (ConcatInputSection *isec : inputs)
-    isec->writeTo(buf + isec->outSecOff);
+  // Parallelize writing at InputSection granularity. Each InputSection writes
+  // to its own non-overlapping region of the output buffer, so this is safe.
+  static constexpr size_t kParallelWriteThreshold = 128;
+  if (inputs.size() < kParallelWriteThreshold) {
+    for (ConcatInputSection *isec : inputs)
+      isec->writeTo(buf + isec->outSecOff);
+    return;
+  }
+
+  parallelForEach(inputs,
+                  [buf](ConcatInputSection *isec) { isec->writeTo(buf + isec->outSecOff); });
 }
 
 void TextOutputSection::writeTo(uint8_t *buf) const {
-  // Merge input sections from thunk & ordinary vectors
-  size_t i = 0, ie = inputs.size();
-  size_t t = 0, te = thunks.size();
-  while (i < ie || t < te) {
-    while (i < ie && (t == te || inputs[i]->empty() ||
-                      inputs[i]->outSecOff < thunks[t]->outSecOff)) {
-      inputs[i]->writeTo(buf + inputs[i]->outSecOff);
-      ++i;
-    }
-    while (t < te && (i == ie || thunks[t]->outSecOff < inputs[i]->outSecOff)) {
-      thunks[t]->writeTo(buf + thunks[t]->outSecOff);
-      ++t;
-    }
+  // Parallelize writing of input sections and thunks. Each writes to its own
+  // non-overlapping region of the output buffer.
+  static constexpr size_t kParallelInputWriteThreshold = 128;
+  if (inputs.size() < kParallelInputWriteThreshold) {
+    for (ConcatInputSection *isec : inputs)
+      if (!isec->empty())
+        isec->writeTo(buf + isec->outSecOff);
+  } else {
+    parallelForEach(inputs, [buf](ConcatInputSection *isec) {
+      if (!isec->empty())
+        isec->writeTo(buf + isec->outSecOff);
+    });
+  }
+
+  static constexpr size_t kParallelThunkWriteThreshold = 32;
+  if (thunks.size() < kParallelThunkWriteThreshold) {
+    for (ConcatInputSection *t : thunks)
+      t->writeTo(buf + t->outSecOff);
+  } else {
+    parallelForEach(thunks,
+                    [buf](ConcatInputSection *t) { t->writeTo(buf + t->outSecOff); });
   }
 }
 

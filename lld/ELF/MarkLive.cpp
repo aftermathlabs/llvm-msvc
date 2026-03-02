@@ -31,6 +31,7 @@
 #include "lld/Common/Strings.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Object/ELF.h"
+#include "llvm/Support/Parallel.h"
 #include "llvm/Support/TimeProfiler.h"
 #include <vector>
 
@@ -305,6 +306,79 @@ template <class ELFT> void MarkLive<ELFT>::run() {
 template <class ELFT> void MarkLive<ELFT>::mark() {
   // Mark all reachable sections.
   while (!queue.empty()) {
+    static constexpr size_t kParallelWorklistThreshold = 2048;
+    if (parallel::strategy.ThreadsRequested != 1 &&
+        queue.size() >= kParallelWorklistThreshold) {
+      struct PendingReloc {
+        Symbol *sym = nullptr;
+        InputSectionBase *target = nullptr;
+        uint64_t targetOffset = 0;
+      };
+      struct PendingRefs {
+        SmallVector<PendingReloc, 0> relocs;
+        SmallVector<InputSectionBase *, 0> dependentSections;
+        InputSectionBase *nextInSectionGroup = nullptr;
+      };
+
+      SmallVector<InputSection *, 0> batch;
+      batch.reserve(queue.size());
+      while (!queue.empty())
+        batch.push_back(queue.pop_back_val());
+
+      std::vector<PendingRefs> pending(batch.size());
+      parallelFor(0, batch.size(), [&](size_t i) {
+        InputSectionBase &sec = *batch[i];
+        PendingRefs &refs = pending[i];
+        const RelsOrRelas<ELFT> rels = sec.template relsOrRelas<ELFT>();
+        refs.relocs.reserve(rels.rels.size() + rels.relas.size());
+        auto collectReloc = [&](const auto &rel) {
+          Symbol &sym = sec.getFile<ELFT>()->getRelocTargetSym(rel);
+          PendingReloc pendingReloc;
+          pendingReloc.sym = &sym;
+          if (auto *d = dyn_cast<Defined>(&sym)) {
+            if (auto *relSec = dyn_cast_or_null<InputSectionBase>(d->section)) {
+              uint64_t offset = d->value;
+              if (d->isSection())
+                offset += getAddend<ELFT>(sec, rel);
+              pendingReloc.target = relSec;
+              pendingReloc.targetOffset = offset;
+            }
+          }
+          refs.relocs.push_back(pendingReloc);
+        };
+        for (const typename ELFT::Rel &rel : rels.rels)
+          collectReloc(rel);
+        for (const typename ELFT::Rela &rel : rels.relas)
+          collectReloc(rel);
+        refs.dependentSections.append(sec.dependentSections.begin(),
+                                      sec.dependentSections.end());
+        refs.nextInSectionGroup = sec.nextInSectionGroup;
+      });
+
+      for (size_t i = 0; i < batch.size(); ++i) {
+        for (const PendingReloc &pendingReloc : pending[i].relocs) {
+          Symbol *sym = pendingReloc.sym;
+          sym->used = true;
+          if (dyn_cast<Defined>(sym)) {
+            if (pendingReloc.target)
+              enqueue(pendingReloc.target, pendingReloc.targetOffset);
+            continue;
+          }
+          if (auto *ss = dyn_cast<SharedSymbol>(sym))
+            if (!ss->isWeak())
+              cast<SharedFile>(ss->file)->isNeeded = true;
+          for (InputSectionBase *cSec : cNamedSections.lookup(sym->getName()))
+            enqueue(cSec, 0);
+        }
+
+        for (InputSectionBase *isec : pending[i].dependentSections)
+          enqueue(isec, 0);
+        if (pending[i].nextInSectionGroup)
+          enqueue(pending[i].nextInSectionGroup, 0);
+      }
+      continue;
+    }
+
     InputSectionBase &sec = *queue.pop_back_val();
 
     const RelsOrRelas<ELFT> rels = sec.template relsOrRelas<ELFT>();

@@ -63,6 +63,7 @@ public:
   ArrayRef<Symbol *> getSymbols() const { return symVector; }
   Symbol *find(llvm::CachedHashStringRef name);
   Symbol *find(StringRef name) { return find(llvm::CachedHashStringRef(name)); }
+  void reserve(size_t additional);
 
 private:
   std::pair<Symbol *, bool> insert(StringRef name, const InputFile *);
