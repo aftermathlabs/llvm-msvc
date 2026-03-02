@@ -28,6 +28,20 @@ lld_target_link_libraries(lld
   lldWasm
   )
 
+if(LLD_ENABLE_MIMALLOC)
+  set(_lld_mimalloc_lib "${LLD_MIMALLOC_LIBRARY}")
+  if(NOT _lld_mimalloc_lib)
+    find_library(_lld_mimalloc_lib NAMES mimalloc-override mimalloc)
+  endif()
+  if(NOT _lld_mimalloc_lib)
+    message(FATAL_ERROR
+      "LLD_ENABLE_MIMALLOC=ON but no mimalloc library found. "
+      "Set LLD_MIMALLOC_LIBRARY to an absolute library path.")
+  endif()
+  message(STATUS "LLD: linking mimalloc library: ${_lld_mimalloc_lib}")
+  target_link_libraries(lld PRIVATE "${_lld_mimalloc_lib}")
+endif()
+
 install(TARGETS lld
   RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}")
 if(WIN32 AND LLVM_ENABLE_PACK_PDB)

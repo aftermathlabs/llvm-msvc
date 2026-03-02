@@ -163,6 +163,12 @@ endif()
 option(LLD_BUILD_TOOLS
   "Build the lld tools. If OFF, just generate build targets." ON)
 
+option(LLD_ENABLE_MIMALLOC
+  "Link lld driver with mimalloc (or mimalloc-override) for allocator experiments."
+  OFF)
+set(LLD_MIMALLOC_LIBRARY "" CACHE FILEPATH
+  "Path to mimalloc library used when LLD_ENABLE_MIMALLOC is ON.")
+  
 option(LLD_DEFAULT_LD_LLD_IS_MINGW
     "Use MinGW as the default backend for ld.lld. If OFF, ELF will be used." OFF)
 if (LLD_DEFAULT_LD_LLD_IS_MINGW)
