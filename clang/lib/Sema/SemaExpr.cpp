@@ -19211,19 +19211,20 @@ void Sema::MarkFunctionReferenced(SourceLocation Loc, FunctionDecl *Func,
 
     Func->markUsed(Context);
   }
-#ifdef _WIN32
+  
   // If the function is inlined in the most recent declaration but not in the
   // first declaration, then the function is implicitly inlined. This can happen
   // when a function is not declared inline in a header file and then defined in a
   // source file with the inline keyword. In this case, we need to set the
   // `ImplicitlyInline` flag to false so that the function is not treated as
   // explicitly inlined.
-  if (Func->getMostRecentDecl() && Func->getFirstDecl() &&
+  const llvm::Triple &Triple = Context.getTargetInfo().getTriple();
+  if ((Triple.isOSWindows() || Triple.isOSBinFormatCOFF()) &&
+      Func->getMostRecentDecl() && Func->getFirstDecl() &&
       Func->getMostRecentDecl()->isInlined() &&
       !Func->getFirstDecl()->isInlined()) {
     Func->getMostRecentDecl()->setImplicitlyInline(false);
   }
-#endif
 }
 
 /// Directly mark a variable odr-used. Given a choice, prefer to use
