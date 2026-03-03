@@ -932,49 +932,50 @@ MacroArgs *Preprocessor::ReadMacroCallArgumentList(Token &MacroName,
   // an error.
   if (!isVariadic && NumActuals > MinArgsExpected &&
       !ContainsCodeCompletionTok) {
-#ifdef _WIN32
-    // [MSVC Compatibility]
-    // MSVC discards redundant args and warns about it.
-    Diag(TooManyArgsLoc, diag::ext_too_many_args_in_macro_invoc_msvc)
-        << MacroName.getIdentifierInfo();
-    NumActuals = MinArgsExpected;
-#else
-    // Emit the diagnostic at the macro name in case there is a missing ).
-    // Emitting it at the , could be far away from the macro name.
-    Diag(TooManyArgsLoc, diag::err_too_many_args_in_macro_invoc);
-    Diag(MI->getDefinitionLoc(), diag::note_macro_here)
-        << MacroName.getIdentifierInfo();
+    if (getLangOpts().MicrosoftExt || getLangOpts().MSVCCompat) {
+      // [MSVC Compatibility]
+      // MSVC discards redundant args and warns about it.
+      Diag(TooManyArgsLoc, diag::ext_too_many_args_in_macro_invoc_msvc)
+          << MacroName.getIdentifierInfo();
+      NumActuals = MinArgsExpected;
+    } else {
+      // Emit the diagnostic at the macro name in case there is a missing ).
+      // Emitting it at the , could be far away from the macro name.
+      Diag(TooManyArgsLoc, diag::err_too_many_args_in_macro_invoc);
+      Diag(MI->getDefinitionLoc(), diag::note_macro_here)
+          << MacroName.getIdentifierInfo();
 
-    // Commas from braced initializer lists will be treated as argument
-    // separators inside macros.  Attempt to correct for this with
-    // parentheses.
-    // TODO: See if this can be generalized to angle brackets for templates
-    // inside macro arguments.
+      // Commas from braced initializer lists will be treated as argument
+      // separators inside macros.  Attempt to correct for this with
+      // parentheses.
+      // TODO: See if this can be generalized to angle brackets for templates
+      // inside macro arguments.
 
-    SmallVector<Token, 4> FixedArgTokens;
-    unsigned FixedNumArgs = 0;
-    SmallVector<SourceRange, 4> ParenHints, InitLists;
-    if (!GenerateNewArgTokens(*this, ArgTokens, FixedArgTokens, FixedNumArgs,
-                              ParenHints, InitLists)) {
-      if (!InitLists.empty()) {
-        DiagnosticBuilder DB = Diag(
-            MacroName, diag::note_init_list_at_beginning_of_macro_argument);
-        for (SourceRange Range : InitLists)
-          DB << Range;
+      SmallVector<Token, 4> FixedArgTokens;
+      unsigned FixedNumArgs = 0;
+      SmallVector<SourceRange, 4> ParenHints, InitLists;
+      if (!GenerateNewArgTokens(*this, ArgTokens, FixedArgTokens, FixedNumArgs,
+                                ParenHints, InitLists)) {
+        if (!InitLists.empty()) {
+          DiagnosticBuilder DB = Diag(
+              MacroName, diag::note_init_list_at_beginning_of_macro_argument);
+          for (SourceRange Range : InitLists)
+            DB << Range;
+        }
+        return nullptr;
       }
-      return nullptr;
-    }
-    if (FixedNumArgs != MinArgsExpected)
-      return nullptr;
+      if (FixedNumArgs != MinArgsExpected)
+        return nullptr;
 
-    DiagnosticBuilder DB = Diag(MacroName, diag::note_suggest_parens_for_macro);
-    for (SourceRange ParenLocation : ParenHints) {
-      DB << FixItHint::CreateInsertion(ParenLocation.getBegin(), "(");
-      DB << FixItHint::CreateInsertion(ParenLocation.getEnd(), ")");
+      DiagnosticBuilder DB =
+          Diag(MacroName, diag::note_suggest_parens_for_macro);
+      for (SourceRange ParenLocation : ParenHints) {
+        DB << FixItHint::CreateInsertion(ParenLocation.getBegin(), "(");
+        DB << FixItHint::CreateInsertion(ParenLocation.getEnd(), ")");
+      }
+      ArgTokens.swap(FixedArgTokens);
+      NumActuals = FixedNumArgs;
     }
-    ArgTokens.swap(FixedArgTokens);
-    NumActuals = FixedNumArgs;
-#endif
   }
 
   // See MacroArgs instance var for description of this.
@@ -1595,8 +1596,8 @@ void Preprocessor::ExpandBuiltinMacro(Token &Tok) {
         FN += PLoc.getFilename();
         processPathForFileMacro(FN, getLangOpts(), getTargetInfo());
         //[MSVC Compalibility] Use file name and line to replace '__FUNCTION__'
-#ifdef _WIN32
-        if (II == Ident__FUNCTION__) {
+        if ((getLangOpts().MicrosoftExt || getLangOpts().MSVCCompat) &&
+            II == Ident__FUNCTION__) {
           SmallString<256> FNTemp =
               llvm::MSVCMacroRebuildingPass::get__FUNCTION__MarkerName();
           FNTemp += FN;
@@ -1605,7 +1606,6 @@ void Preprocessor::ExpandBuiltinMacro(Token &Tok) {
           FNTemp += ")";
           FN = FNTemp;
         }
-#endif
       }
       Lexer::Stringify(FN);
       OS << '"' << FN << '"';
