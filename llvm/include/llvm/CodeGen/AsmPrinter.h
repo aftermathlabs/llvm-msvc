@@ -129,9 +129,6 @@ public:
   /// default, this is equal to CurrentFnSym.
   MCSymbol *CurrentFnSymForSize = nullptr;
 
-  /// Used for llvm-msvc
-  MCSection *LLVMMSVCCOFFSection = nullptr;
-
   /// Map a basic block section ID to the begin and end symbols of that section
   ///  which determine the section's range.
   struct MBBSectionRange {

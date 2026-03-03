@@ -364,11 +364,6 @@ AsmPrinter::AsmPrinter(TargetMachine &tm, std::unique_ptr<MCStreamer> Streamer)
   VerboseAsm = OutStreamer->isVerboseAsm();
   DwarfUsesRelocationsAcrossSections =
       MAI->doesDwarfUseRelocationsAcrossSections();
-  LLVMMSVCCOFFSection = OutContext.getCOFFSection(
-      "llvmmsvc",
-      COFF::IMAGE_SCN_CNT_CODE | COFF::IMAGE_SCN_MEM_EXECUTE |
-          COFF::IMAGE_SCN_MEM_READ,
-      SectionKind::getText());
 }
 
 AsmPrinter::~AsmPrinter() {
@@ -801,9 +796,6 @@ void AsmPrinter::emitGlobalVariable(const GlobalVariable *GV) {
 
   // Determine to which section this global should be emitted.
   MCSection *TheSection = getObjFileLowering().SectionForGlobal(GV, GVKind, TM);
-  if (GV->getParent() && GV->getParent()->getModuleFlag("ms-kernel") &&
-      GV->isConstant() && TM.getTargetTriple().isOSBinFormatCOFF())
-    TheSection = LLVMMSVCCOFFSection;
     
   // If we have a bss global going to a section that supports the
   // zerofill directive, do so here.
@@ -947,10 +939,6 @@ void AsmPrinter::emitFunctionHeader() {
     MF->setSection(getObjFileLowering().getUniqueSectionForFunction(F, TM));
   else
     MF->setSection(getObjFileLowering().SectionForGlobal(&F, TM));
-  if (TM.getTargetTriple().isOSBinFormatCOFF() && MF->getSection() &&
-      MF->getSection()->getName() == ".text") {
-    MF->setSection(LLVMMSVCCOFFSection);
-  }
   OutStreamer->switchSection(MF->getSection());
 
   if (!MAI->hasVisibilityOnlyWithLinkage())
@@ -2621,11 +2609,6 @@ void AsmPrinter::emitConstantPool() {
 
     MCSection *S = getObjFileLowering().getSectionForConstant(
         getDataLayout(), Kind, C, Alignment);
-    // Handle mergeable constants in windows driver.
-    if (Kind.isMergeableConst() && MF->getFunction().getParent() &&
-        MF->getFunction().getParent()->getModuleFlag("ms-kernel") &&
-        TM.getTargetTriple().isOSBinFormatCOFF())
-      S = LLVMMSVCCOFFSection;
       
     // The number of sections are small, just do a linear search from the
     // last section to the first.
