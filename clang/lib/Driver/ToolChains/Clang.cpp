@@ -4673,13 +4673,17 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
   const llvm::Triple *AuxTriple =
       (IsCuda || IsHIP) ? TC.getAuxTriple() : nullptr;
   bool IsWindowsMSVC = RawTriple.isWindowsMSVCEnvironment();
+  bool IsWindowsCOFF = RawTriple.isOSWindows() || RawTriple.isOSBinFormatCOFF();
   bool IsIAMCU = RawTriple.isOSIAMCU();
 
   // Adjust IsWindowsXYZ for CUDA/HIP compilations.  Even when compiling in
   // device mode (i.e., getToolchain().getTriple() is NVPTX/AMDGCN, not
   // Windows), we need to pass Windows-specific flags to cc1.
-  if (IsCuda || IsHIP)
+  if (IsCuda || IsHIP) {
     IsWindowsMSVC |= AuxTriple && AuxTriple->isWindowsMSVCEnvironment();
+    IsWindowsCOFF |= AuxTriple &&
+                     (AuxTriple->isOSWindows() || AuxTriple->isOSBinFormatCOFF());
+  }
 
   // C++ is not supported for IAMCU.
   if (IsIAMCU && types::isCXX(Input.getType()))
@@ -6769,15 +6773,16 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
     CmdArgs.push_back("-fkeep-system-includes");
   }
 
-  // -fms-extensions=0 is default.
+  // Enable -fms-extensions by default for Windows/COFF targets.
   if (Args.hasFlag(options::OPT_fms_extensions, options::OPT_fno_ms_extensions,
-                   IsWindowsMSVC))
+                   IsWindowsCOFF))
     CmdArgs.push_back("-fms-extensions");
 
-  // -fms-compatibility=0 is default.
+  // Enable -fms-compatibility by default for Windows/COFF targets when
+  // -fms-extensions is enabled.
   bool IsMSVCCompat = Args.hasFlag(
       options::OPT_fms_compatibility, options::OPT_fno_ms_compatibility,
-      (IsWindowsMSVC && Args.hasFlag(options::OPT_fms_extensions,
+      (IsWindowsCOFF && Args.hasFlag(options::OPT_fms_extensions,
                                      options::OPT_fno_ms_extensions, true)));
   if (IsMSVCCompat)
     CmdArgs.push_back("-fms-compatibility");
