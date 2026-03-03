@@ -55,14 +55,15 @@ using namespace CodeGen;
 /// shouldEmitLifetimeMarkers - Decide whether we need emit the life-time
 /// markers.
 static bool shouldEmitLifetimeMarkers(const CodeGenOptions &CGOpts,
-                                      const LangOptions &LangOpts) {
-#ifdef _WIN32
-  //[SEH] when we enable EHAsynch, we should not emit life time mark
-  //if (LangOpts.EHAsynch)
-  CodeGenOptions *CGOptsTemp = (CodeGenOptions *)&CGOpts;
-  CGOptsTemp->DisableLifetimeMarkers = true;
-  return false;
-#endif
+                                      const LangOptions &LangOpts,
+                                      const llvm::Triple &Triple) {
+  if (Triple.isOSWindows() || Triple.isOSBinFormatCOFF()) {
+    //[SEH] when we enable EHAsynch, we should not emit life time mark
+    //if (LangOpts.EHAsynch)
+    auto &MutableCGOpts = const_cast<CodeGenOptions &>(CGOpts);
+    MutableCGOpts.DisableLifetimeMarkers = true;
+    return false;
+  }
 
   if (CGOpts.DisableLifetimeMarkers)
     return false;
@@ -84,7 +85,8 @@ CodeGenFunction::CodeGenFunction(CodeGenModule &cgm, bool suppressNewContext)
       SanOpts(CGM.getLangOpts().Sanitize), CurFPFeatures(CGM.getLangOpts()),
       DebugInfo(CGM.getModuleDebugInfo()), PGO(cgm),
       ShouldEmitLifetimeMarkers(
-          shouldEmitLifetimeMarkers(CGM.getCodeGenOpts(), CGM.getLangOpts())) {
+          shouldEmitLifetimeMarkers(CGM.getCodeGenOpts(), CGM.getLangOpts(),
+                                    CGM.getTarget().getTriple())) {
   if (!suppressNewContext)
     CGM.getCXXABI().getMangleContext().startNewFunction();
   EHStack.setCGF(this);
