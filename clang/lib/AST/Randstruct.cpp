@@ -21,6 +21,7 @@
 #include "llvm/ADT/SmallVector.h"
 
 #include <algorithm>
+#include <chrono>
 #include <random>
 #include <set>
 #include <sstream>
@@ -203,15 +204,12 @@ bool randomizeStructureLayout(const ASTContext &Context, RecordDecl *RD,
   }
 
   std::string RandstructSeed = Context.getLangOpts().RandstructSeed;
-#ifdef _WIN32
   if (RandstructSeed.empty()) {
-    constexpr auto Time = __TIME__;
-    constexpr auto ConstKey = (static_cast<unsigned long long>(Time[7]) +
-                               static_cast<unsigned long long>(Time[6]) * 10 +
-                               static_cast<unsigned long long>(Time[4]) * 60);
-    RandstructSeed = Twine(ConstKey).str();
+    const auto Ticks =
+        std::chrono::steady_clock::now().time_since_epoch().count();
+    RandstructSeed = Twine(static_cast<unsigned long long>(Ticks)).str();
   }
-#endif
+
   std::string Seed = RandstructSeed + RD->getNameAsString();
   std::seed_seq SeedSeq(Seed.begin(), Seed.end());
   std::mt19937 RNG(SeedSeq);
