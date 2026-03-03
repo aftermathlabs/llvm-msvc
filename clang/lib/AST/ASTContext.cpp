@@ -7121,11 +7121,7 @@ QualType ASTContext::isPromotableBitField(Expr *E) const {
   if (BitWidth < IntSize) {
     if (getLangOpts().MicrosoftExt || getLangOpts().MSVCCompat)
       return {};
-#ifdef _WIN32
-    return {};
-#else
     return IntTy;
-#endif
   }
 
   if (BitWidth == IntSize)
