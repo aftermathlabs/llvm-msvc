@@ -72,4 +72,5 @@ Yes.
 
 ## Credits
 - ``LLVM``
+- [``mold``](https://github.com/rui314/mold)
 - Some anonymous people
