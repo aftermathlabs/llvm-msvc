@@ -409,12 +409,11 @@ void TokenLexer::ExpandFunctionArguments() {
     bool PasteBefore = I != 0 && Tokens[I-1].is(tok::hashhash);
     bool PasteAfter = I+1 != E && Tokens[I+1].is(tok::hashhash);
     bool RParenAfter = I+1 != E && Tokens[I+1].is(tok::r_paren);
-    // [MSVC Compatibility] We allow pre-expand 'major' in (0x##major) 
-#ifdef _WIN32
+    // [MSVC Compatibility] We allow pre-expand 'major' in (0x##major)
     bool NumericConstantBeforeHashHash =
+        (PP.getLangOpts().MSVCCompat || PP.getLangOpts().MicrosoftExt) &&
         (I >= 2) && Tokens[I - 1].is(tok::hashhash) &&
         Tokens[I - 2].is(tok::numeric_constant);
-#endif
     assert((!NonEmptyPasteBefore || PasteBefore || VCtx.isInVAOpt()) &&
            "unexpected ## in ResultToks");
 
@@ -452,15 +451,10 @@ void TokenLexer::ExpandFunctionArguments() {
     // If it is not the LHS/RHS of a ## operator, we must pre-expand the
     // argument and substitute the expanded tokens into the result.  This is
     // C99 6.10.3.1p1.
-    // [MSVC Compatibility] We allow pre-expand 'major' in (0x##major) 
+    // [MSVC Compatibility] We allow pre-expand 'major' in (0x##major)
     bool GotoPreExpand = !PasteBefore && !PasteAfter;
-#ifdef _WIN32
-    if (!GotoPreExpand) {
-      if (NumericConstantBeforeHashHash) {
-        GotoPreExpand = true;
-      }
-    }
-#endif
+    if (!GotoPreExpand && NumericConstantBeforeHashHash)
+      GotoPreExpand = true;
     if (GotoPreExpand) {
       const Token *ResultArgToks;
 
@@ -816,24 +810,24 @@ bool TokenLexer::pasteTokens(Token &LHSTok, ArrayRef<Token> TokenStream,
 
     // Lex the resultant pasted token into Result.
     Token Result;
-#ifdef _WIN32
-    // [MSVC Compatibility] Handle "__FUNCTION__"##"string"
-    if (LHSTok.is(tok::kw___FUNCTION__) && RHS.is(tok::string_literal)) {
-      // Returns false because we need to analyze later. 
-      return false;
+    if (PP.getLangOpts().MSVCCompat || PP.getLangOpts().MicrosoftExt) {
+      // [MSVC Compatibility] Handle "__FUNCTION__"##"string"
+      if (LHSTok.is(tok::kw___FUNCTION__) && RHS.is(tok::string_literal)) {
+        // Returns false because we need to analyze later.
+        return false;
+      }
+      // [MSVC Compatibility] Handle '.##identifier' or '->##identifier'
+      if ((LHSTok.is(tok::period) || LHSTok.is(tok::arrow)) &&
+          RHS.isAnyIdentifier()) {
+        // Returns true the caller should immediately return the token.
+        return true;
+      }
+      // [MSVC Compatibility] Handle "string"##"string"
+      if (LHSTok.is(tok::string_literal) && RHS.is(tok::string_literal)) {
+        // Returns true the caller should immediately return the token.
+        return true;
+      }
     }
-    // [MSVC Compatibility] Handle '.##identifier' or '->##identifier'
-    if ((LHSTok.is(tok::period) || LHSTok.is(tok::arrow)) &&
-        RHS.isAnyIdentifier()) {
-      // Returns true the caller should immediately return the token.
-      return true;
-    }
-    // [MSVC Compatibility] Handle "string"##"string"
-    if ((LHSTok.is(tok::string_literal) && RHS.is(tok::string_literal))) {
-      // Returns true the caller should immediately return the token.
-      return true;
-    }
-#endif
     if (LHSTok.isAnyIdentifier() && RHS.isAnyIdentifier()) {
       // Common paste case: identifier+identifier = identifier.  Avoid creating
       // a lexer and other overhead.
@@ -877,17 +871,17 @@ bool TokenLexer::pasteTokens(Token &LHSTok, ArrayRef<Token> TokenStream,
       // error.  This occurs with "x ## +"  and other stuff.  Return with LHSTok
       // unmodified and with RHS as the next token to lex.
       if (isInvalid) {
-#ifdef _WIN32
-        // It's OK on windows
-        if (LHSTok.is(tok::amp))
-          return true;
+        if (PP.getLangOpts().MSVCCompat || PP.getLangOpts().MicrosoftExt) {
+          // It's OK on windows
+          if (LHSTok.is(tok::amp))
+            return true;
 
-        // [MSVC Compatibility] Handle "identifier"##"string"
-        if ((LHSTok.isAnyIdentifier() && RHS.is(tok::string_literal))) {
-          //  Returns false because we need to analyze later.
-          return false;
+          // [MSVC Compatibility] Handle "identifier"##"string"
+          if (LHSTok.isAnyIdentifier() && RHS.is(tok::string_literal)) {
+            // Returns false because we need to analyze later.
+            return false;
+          }
         }
-#endif
         // Explicitly convert the token location to have proper expansion
         // information so that the user knows where it came from.
         SourceManager &SM = PP.getSourceManager();
