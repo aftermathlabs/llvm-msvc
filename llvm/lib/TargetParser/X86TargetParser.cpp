@@ -662,7 +662,7 @@ void llvm::X86::getFeaturesForCPU(StringRef CPU,
   // be used with 64-bit mode.
   Bits &= ~Feature64BIT;
   // [MSVC Compatibility]
-  if (TargetTriple.isOSWindows()) {
+  if (TargetTriple.isOSWindows() || TargetTriple.isOSBinFormatCOFF()) {
     // Matches Microsoft's default support.
     Bits |= FeatureSSE3;
     Bits |= FeatureSSE4_1;
