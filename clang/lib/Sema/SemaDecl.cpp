@@ -4374,10 +4374,10 @@ bool Sema::MergeFunctionDecl(FunctionDecl *New, NamedDecl *&OldD, Scope *S,
   if (getLangOpts().MicrosoftExt || getLangOpts().MSVCCompat)
     IsMergeRequiredForMSVC = true;
 
-  // In _WIN32 environment, merging is always required.
-#ifdef _WIN32
-  IsMergeRequiredForMSVC = true;
-#endif
+  // For Windows/COFF targets, merging is always required.
+  const llvm::Triple &Triple = Context.getTargetInfo().getTriple();
+  if (Triple.isOSWindows() || Triple.isOSBinFormatCOFF())
+    IsMergeRequiredForMSVC = true;
 
   // Perform the merge if required.
   if (IsMergeRequiredForMSVC) {
@@ -5534,9 +5534,10 @@ static bool CheckAnonMemberRedeclaration(Sema &SemaRef, Scope *S,
     return false;
   }
 
-#ifdef _WIN32
-  return false;
-#endif
+  const llvm::Triple &Triple = SemaRef.Context.getTargetInfo().getTriple();
+  if (SemaRef.getLangOpts().MicrosoftExt || SemaRef.getLangOpts().MSVCCompat ||
+      Triple.isOSWindows() || Triple.isOSBinFormatCOFF())
+    return false;
 
   SemaRef.Diag(NameLoc, diag::err_anonymous_record_member_redecl)
     << IsUnion << Name;
