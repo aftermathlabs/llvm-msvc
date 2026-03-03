@@ -2151,11 +2151,10 @@ Parser::ParsePostfixExpressionSuffix(ExprResult LHS) {
         SourceLocation RParLoc = Tok.getLocation();
         LHS = Actions.ActOnCallExpr(getCurScope(), Fn, Loc, ArgExprs, RParLoc,
                                     ExecConfig);
-#ifdef _WIN32
-        if (LHS.isInvalid() && Fn->getStmtClass() != Expr::ParenExprClass) {
-#else
-        if (LHS.isInvalid()) {
-#endif
+        const bool IsMSCompat =
+            getLangOpts().MicrosoftExt || getLangOpts().MSVCCompat;
+        if (LHS.isInvalid() &&
+            (!IsMSCompat || Fn->getStmtClass() != Expr::ParenExprClass)) {
           ArgExprs.insert(ArgExprs.begin(), Fn);
           LHS =
               Actions.CreateRecoveryExpr(Fn->getBeginLoc(), RParLoc, ArgExprs);
