@@ -339,12 +339,13 @@ static IdentifierInfo *RegisterBuiltinMacro(Preprocessor &PP, const char *Name){
 /// identifier table.
 void Preprocessor::RegisterBuiltinMacros() {
   //[MSVC Compatibility]
-#ifdef _WIN32
-  Ident__FUNCTION__ = RegisterBuiltinMacro(*this, "__FUNCTION__");
-  Ident__LINE__ = RegisterBuiltinMacro(*this, "__LINE__");
-#else
-  Ident__FUNCTION__ = Ident__LINE__ = RegisterBuiltinMacro(*this, "__LINE__");
-#endif
+  if (getLangOpts().MicrosoftExt || getLangOpts().MSVCCompat) {
+    Ident__FUNCTION__ = RegisterBuiltinMacro(*this, "__FUNCTION__");
+    Ident__LINE__ = RegisterBuiltinMacro(*this, "__LINE__");
+  } else {
+    Ident__FUNCTION__ = Ident__LINE__ =
+        RegisterBuiltinMacro(*this, "__LINE__");
+  }
   Ident__RANDOM__NUMERIC__ = RegisterBuiltinMacro(*this, "__RANDOM__NUMERIC__");
   Ident__FILE__ = RegisterBuiltinMacro(*this, "__FILE__");
   Ident__DATE__ = RegisterBuiltinMacro(*this, "__DATE__");
