@@ -19180,9 +19180,9 @@ void Sema::MarkFunctionReferenced(SourceLocation Loc, FunctionDecl *Func,
         UndefinedButUsed.insert(std::make_pair(Func->getCanonicalDecl(), Loc));
       else if (Func->getMostRecentDecl()->isInlined() && !LangOpts.GNUInline &&
                !Func->getMostRecentDecl()->hasAttr<GNUInlineAttr>()) {
-#ifdef _WIN32
-        Func->getMostRecentDecl()->setImplicitlyInline(false);
-#endif
+        const llvm::Triple &Triple = Context.getTargetInfo().getTriple();
+        if (Triple.isOSWindows() || Triple.isOSBinFormatCOFF())
+          Func->getMostRecentDecl()->setImplicitlyInline(false);
         UndefinedButUsed.insert(std::make_pair(Func->getCanonicalDecl(), Loc));
       }
       else if (isExternalWithNoLinkageType(Func))
