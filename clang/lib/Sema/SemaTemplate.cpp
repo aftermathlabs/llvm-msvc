@@ -6933,13 +6933,15 @@ static bool CheckTemplateArgumentAddressOfObjectOrFunction(
   }
 
   if (!Entity) {
-#ifdef _WIN32
+// #ifdef _WIN32
+//     S.Diag(Arg->getBeginLoc(), diag::warn_template_arg_not_decl_ref)
+//         << Arg->getSourceRange();
+// #else
+//     S.Diag(Arg->getBeginLoc(), diag::err_template_arg_not_decl_ref)
+//         << Arg->getSourceRange();
+// #endif
     S.Diag(Arg->getBeginLoc(), diag::warn_template_arg_not_decl_ref)
         << Arg->getSourceRange();
-#else
-    S.Diag(Arg->getBeginLoc(), diag::err_template_arg_not_decl_ref)
-        << Arg->getSourceRange();
-#endif
     S.NoteTemplateParameterLocation(*Param);
     return true;
   }
