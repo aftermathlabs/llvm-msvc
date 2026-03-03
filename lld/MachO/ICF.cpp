@@ -48,8 +48,6 @@ public:
   bool equalsVariable(const ConcatInputSection *ia,
                       const ConcatInputSection *ib);
 
-  // ICF needs a copy of the inputs vector because its equivalence-class
-  // segregation algorithm destroys the proper sequence.
   std::vector<ConcatInputSection *> icfInputs;
 
   unsigned icfPass = 0;
@@ -234,13 +232,17 @@ bool ICF::equalsVariable(const ConcatInputSection *ia,
              ib->symbols.end();
 }
 
-// Find the first InputSection after BEGIN whose equivalence class differs
 size_t ICF::findBoundary(size_t begin, size_t end) {
-  uint64_t beginHash = icfInputs[begin]->icfEqClass[icfPass % 2];
-  for (size_t i = begin + 1; i < end; ++i)
-    if (beginHash != icfInputs[i]->icfEqClass[icfPass % 2])
-      return i;
-  return end;
+  uint64_t ec = icfInputs[begin]->icfEqClass[icfPass % 2];
+  size_t lo = begin + 1, hi = end;
+  while (lo < hi) {
+    size_t mid = lo + (hi - lo) / 2;
+    if (icfInputs[mid]->icfEqClass[icfPass % 2] == ec)
+      lo = mid + 1;
+    else
+      hi = mid;
+  }
+  return lo;
 }
 
 // Invoke FUNC on subranges with matching equivalence class
@@ -294,45 +296,48 @@ void ICF::forEachClass(llvm::function_ref<void(size_t, size_t)> func) {
 }
 
 void ICF::run() {
-  // Iterative hash combining. Instead of just 2
-  // fixed iterations, we iterate the hash-combine step until the number of
-  // unique equivalence classes stops increasing. Each iteration incorporates
-  // reloc-referent hashes from one level deeper in the call graph, which is
-  // much cheaper than pairwise comparison and fully parallel.
-  uint64_t prevUniqueCount = 0;
-  bool hasUniqueBaseline = false;
-  DenseSet<uint32_t> classes;
-  classes.reserve(icfInputs.size());
+
   size_t hashPass = 0;
   for (;; ++hashPass) {
     const size_t currSlot = hashPass % 2;
     const size_t nextSlot = (hashPass + 1) % 2;
     auto hashOne = [&](ConcatInputSection *isec) {
-      // Use a better hash combining function: multiply-and-xor instead of
-      // simple addition to reduce collisions.
       uint32_t hash = isec->icfEqClass[currSlot];
       for (const Reloc &r : isec->relocs) {
         if (auto *sym = r.referent.dyn_cast<Symbol *>()) {
           if (auto *defined = dyn_cast<Defined>(sym)) {
             if (defined->isec) {
+              uint32_t refHash;
               if (auto *referentIsec =
                       dyn_cast<ConcatInputSection>(defined->isec))
-                hash = hash * 31 + defined->value +
-                       referentIsec->icfEqClass[currSlot];
+                refHash = defined->value + referentIsec->icfEqClass[currSlot] +
+                          static_cast<uint32_t>(r.addend);
               else
-                hash = hash * 31 + defined->isec->kind() +
-                       defined->isec->getOffset(defined->value);
+                refHash = defined->isec->kind() +
+                          defined->isec->getOffset(defined->value) +
+                          static_cast<uint32_t>(r.addend);
+              hash ^= refHash + 0x9e3779b9 + (hash << 6) + (hash >> 2);
             } else {
-              hash = hash * 31 + defined->value;
+              uint32_t refHash =
+                  defined->value + static_cast<uint32_t>(r.addend);
+              hash ^= refHash + 0x9e3779b9 + (hash << 6) + (hash >> 2);
             }
           } else {
-            // ICF runs before Undefined diags
             assert(isa<Undefined>(sym) || isa<DylibSymbol>(sym));
+            uint32_t refHash =
+                static_cast<uint32_t>(reinterpret_cast<uintptr_t>(sym) >> 4);
+            hash ^= refHash + 0x9e3779b9 + (hash << 6) + (hash >> 2);
+          }
+        } else {
+          auto *isecRef = r.referent.get<InputSection *>();
+          if (auto *concatRef = dyn_cast<ConcatInputSection>(isecRef)) {
+            uint32_t refHash = concatRef->icfEqClass[currSlot] +
+                               static_cast<uint32_t>(r.addend);
+            hash ^= refHash + 0x9e3779b9 + (hash << 6) + (hash >> 2);
           }
         }
       }
-      // Set MSB to 1 to avoid collisions with non-hashed classes.
-      uint32_t nextHash = hash | (1u << 31);
+      uint32_t nextHash = hash | (1U << 31);
       bool changed = nextHash != isec->icfEqClass[currSlot];
       isec->icfEqClass[nextSlot] = nextHash;
       return changed;
@@ -360,27 +365,9 @@ void ICF::run() {
         changedAny |= hashOne(isec);
     }
 
-    // If hash classes stopped changing entirely, we have reached a fixed
-    // point and can skip the unique-count convergence check below.
     if (hashPass >= 1 && !changedAny)
       break;
 
-    // Count unique equivalence classes to detect convergence.
-    classes.clear();
-    for (ConcatInputSection *isec : icfInputs)
-      classes.insert(isec->icfEqClass[nextSlot]);
-    uint64_t uniqueCount = classes.size();
-
-    // Stop when the number of unique classes stabilizes, or after a reasonable
-    // number of iterations. The first 2 iterations are mandatory to match the
-    // original behavior.
-    if (hasUniqueBaseline && hashPass >= 1 && uniqueCount == prevUniqueCount)
-      break;
-    prevUniqueCount = uniqueCount;
-    hasUniqueBaseline = true;
-
-    // Cap at a reasonable number of iterations; in practice convergence
-    // happens within 2-5 iterations.
     if (hashPass >= 7)
       break;
   }
@@ -389,22 +376,25 @@ void ICF::run() {
   icfPass = hashPass + 1;
   const size_t hashSlot = icfPass % 2;
 
-  llvm::stable_sort(
+  parallelSort(
       icfInputs, [hashSlot](const ConcatInputSection *a,
                             const ConcatInputSection *b) {
         return a->icfEqClass[hashSlot] < b->icfEqClass[hashSlot];
       });
   forEachClass([&](size_t begin, size_t end) {
-    segregate(begin, end, &ICF::equalsConstant);
+    if (end - begin > 1)
+      segregate(begin, end, &ICF::equalsConstant);
+    else
+      icfInputs[begin]->icfEqClass[(icfPass + 1) % 2] = end;
   });
 
-  // Split equivalence groups by comparing relocations until convergence.
-  // Thanks to the improved hash iterations above, fewer groups remain here,
-  // reducing the total number of expensive pairwise comparisons.
   do {
     icfRepeat.store(false, std::memory_order_relaxed);
     forEachClass([&](size_t begin, size_t end) {
-      segregate(begin, end, &ICF::equalsVariable);
+      if (end - begin > 1)
+        segregate(begin, end, &ICF::equalsVariable);
+      else
+        icfInputs[begin]->icfEqClass[(icfPass + 1) % 2] = end;
     });
   } while (icfRepeat.load(std::memory_order_relaxed));
   log("ICF needed " + Twine(icfPass) + " iterations");
@@ -536,9 +526,7 @@ void macho::foldIdenticalSections(bool onlyCfStrings) {
     }
   }
   parallelForEach(foldable, [](ConcatInputSection *isec) {
-    assert(isec->icfEqClass[0] == 0); // don't overwrite a unique ID!
-    // Turn-on the top bit to guarantee that valid hashes have no collisions
-    // with the small-integer unique IDs for ICF-ineligible sections
+    assert(isec->icfEqClass[0] == 0);
     isec->icfEqClass[0] = xxh3_64bits(isec->data) | (1ull << 31);
   });
   // Now that every input section is either hashed or marked as unique, run the

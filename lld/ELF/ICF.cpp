@@ -381,11 +381,16 @@ bool ICF<ELFT>::equalsVariable(const InputSection *a, const InputSection *b) {
 }
 
 template <class ELFT> size_t ICF<ELFT>::findBoundary(size_t begin, size_t end) {
-  uint32_t eqClass = sections[begin]->eqClass[current];
-  for (size_t i = begin + 1; i < end; ++i)
-    if (eqClass != sections[i]->eqClass[current])
-      return i;
-  return end;
+  uint32_t ec = sections[begin]->eqClass[current];
+  size_t lo = begin + 1, hi = end;
+  while (lo < hi) {
+    size_t mid = lo + (hi - lo) / 2;
+    if (sections[mid]->eqClass[current] == ec)
+      lo = mid + 1;
+    else
+      hi = mid;
+  }
+  return lo;
 }
 
 // Sections in the same equivalence class are contiguous in Sections
@@ -454,11 +459,22 @@ static bool combineRelocHashes(unsigned cnt, InputSection *isec,
   uint32_t hash = isec->eqClass[cnt % 2];
   for (RelTy rel : rels) {
     Symbol &s = isec->template getFile<ELFT>()->getRelocTargetSym(rel);
-    if (auto *d = dyn_cast<Defined>(&s))
-      if (auto *relSec = dyn_cast_or_null<InputSection>(d->section))
-        hash = hash * 31 + relSec->eqClass[cnt % 2];
+    if (auto *d = dyn_cast<Defined>(&s)) {
+      if (auto *relSec = dyn_cast_or_null<InputSection>(d->section)) {
+        uint32_t refHash = d->value + relSec->eqClass[cnt % 2] +
+                           static_cast<uint32_t>(getAddend<ELFT>(rel));
+        hash ^= refHash + 0x9e3779b9 + (hash << 6) + (hash >> 2);
+      } else if (!d->section) {
+        uint32_t refHash =
+            d->value + static_cast<uint32_t>(getAddend<ELFT>(rel));
+        hash ^= refHash + 0x9e3779b9 + (hash << 6) + (hash >> 2);
+      }
+    } else if (isa<SharedSymbol>(s)) {
+      uint32_t refHash =
+          static_cast<uint32_t>(reinterpret_cast<uintptr_t>(&s) >> 4);
+      hash ^= refHash + 0x9e3779b9 + (hash << 6) + (hash >> 2);
+    }
   }
-  // Set MSB to 1 to avoid collisions with unique IDs.
   uint32_t nextHash = hash | (1U << 31);
   bool changed = nextHash != isec->eqClass[cnt % 2];
   isec->eqClass[(cnt + 1) % 2] = nextHash;
@@ -498,8 +514,8 @@ template <class ELFT> void ICF<ELFT>::foldLeafSectionsEarly() {
   if (leafSections.size() < 2)
     return;
 
-  llvm::stable_sort(leafSections, [](const LeafCandidate &a,
-                                     const LeafCandidate &b) {
+  parallelSort(leafSections, [](const LeafCandidate &a,
+                                const LeafCandidate &b) {
     return a.hash < b.hash;
   });
 
@@ -577,9 +593,7 @@ template <class ELFT> void ICF<ELFT>::run() {
 
   foldLeafSectionsEarly();
 
-  // Initially, we use hash values to partition sections.
   parallelForEach(sections, [&](InputSection *s) {
-    // Set MSB to 1 to avoid collisions with unique IDs.
     s->eqClass[0] = xxh3_64bits(s->content()) | (1U << 31);
   });
 
@@ -639,21 +653,26 @@ template <class ELFT> void ICF<ELFT>::run() {
   auto byEqClass = [](const InputSection *a, const InputSection *b) {
     return a->eqClass[0] < b->eqClass[0];
   };
-  llvm::stable_sort(sections, byEqClass);
+  parallelSort(sections, byEqClass);
 
   // Compare static contents and assign unique equivalence class IDs for each
   // static content. Use a base offset for these IDs to ensure no overlap with
   // the unique IDs already assigned.
   uint32_t eqClassBase = ++uniqueId;
   forEachClass([&](size_t begin, size_t end) {
-    segregate(begin, end, eqClassBase, true);
+    if (end - begin > 1)
+      segregate(begin, end, eqClassBase, true);
+    else
+      sections[begin]->eqClass[next] = eqClassBase + end;
   });
 
-  // Split groups by comparing relocations until convergence is obtained.
   do {
     repeat.store(false, std::memory_order_relaxed);
     forEachClass([&](size_t begin, size_t end) {
-      segregate(begin, end, eqClassBase, false);
+      if (end - begin > 1)
+        segregate(begin, end, eqClassBase, false);
+      else
+        sections[begin]->eqClass[next] = eqClassBase + end;
     });
   } while (repeat.load(std::memory_order_relaxed));
 

@@ -13,9 +13,17 @@
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/Parallel.h"
 #include "llvm/Support/TimeProfiler.h"
+#include <algorithm>
 #include <vector>
 
 namespace lld::coff {
+
+static size_t getParallelWorklistThreshold() {
+  unsigned threads =
+      std::max(1U, llvm::parallel::strategy.compute_thread_count());
+  size_t threshold = static_cast<size_t>(threads) * 2048;
+  return std::clamp<size_t>(threshold, 4096, 65536);
+}
 
 // Set live bit on for each reachable chunk. Unmarked (unreachable)
 // COMDAT chunks will be ignored by Writer, so they will be excluded
@@ -57,18 +65,19 @@ void markLive(COFFLinkerContext &ctx) {
   for (Symbol *b : ctx.config.gcroot)
     addSym(b);
 
+  const size_t parallelThreshold = getParallelWorklistThreshold();
+  const bool canParallelize = llvm::parallel::strategy.ThreadsRequested != 1;
   while (!worklist.empty()) {
-    static constexpr size_t kParallelWorklistThreshold = 4096;
-    if (llvm::parallel::strategy.ThreadsRequested != 1 &&
-        worklist.size() >= kParallelWorklistThreshold) {
+    if (canParallelize && worklist.size() >= parallelThreshold) {
       struct PendingRefs {
         SmallVector<Symbol *, 0> symbols;
         SmallVector<SectionChunk *, 0> children;
       };
 
       SmallVector<SectionChunk *, 0> batch;
-      batch.reserve(worklist.size());
-      while (!worklist.empty())
+      size_t batchLimit = std::min(worklist.size(), parallelThreshold * 8);
+      batch.reserve(batchLimit);
+      for (size_t i = 0; i < batchLimit && !worklist.empty(); ++i)
         batch.push_back(worklist.pop_back_val());
 
       std::vector<PendingRefs> pending(batch.size());
@@ -76,6 +85,7 @@ void markLive(COFFLinkerContext &ctx) {
         SectionChunk *sc = batch[i];
         assert(sc->live && "We mark as live when pushing onto the worklist!");
         PendingRefs &refs = pending[i];
+        refs.symbols.reserve(sc->getRelocs().size());
         for (Symbol *b : sc->symbols())
           if (b)
             refs.symbols.push_back(b);

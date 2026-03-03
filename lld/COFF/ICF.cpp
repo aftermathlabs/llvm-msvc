@@ -207,12 +207,17 @@ bool ICF::equalsVariable(const SectionChunk *a, const SectionChunk *b) {
          assocEquals(a, b);
 }
 
-// Find the first Chunk after Begin that has a different class from Begin.
 size_t ICF::findBoundary(size_t begin, size_t end) {
-  for (size_t i = begin + 1; i < end; ++i)
-    if (chunks[begin]->eqClass[cnt % 2] != chunks[i]->eqClass[cnt % 2])
-      return i;
-  return end;
+  uint32_t eqClass = chunks[begin]->eqClass[cnt % 2];
+  size_t lo = begin + 1, hi = end;
+  while (lo < hi) {
+    size_t mid = lo + (hi - lo) / 2;
+    if (chunks[mid]->eqClass[cnt % 2] == eqClass)
+      lo = mid + 1;
+    else
+      hi = mid;
+  }
+  return lo;
 }
 
 void ICF::forEachClassRange(size_t begin, size_t end,
@@ -291,7 +296,7 @@ void ICF::foldLeafSectionsEarly() {
   if (leaves.size() < 2)
     return;
 
-  llvm::stable_sort(leaves, [](const LeafCandidate &a, const LeafCandidate &b) {
+  parallelSort(leaves, [](const LeafCandidate &a, const LeafCandidate &b) {
     return a.hash < b.hash;
   });
 
@@ -357,9 +362,8 @@ void ICF::run() {
 
   foldLeafSectionsEarly();
 
-  // Initially, we use hash values to partition sections.
   parallelForEach(chunks, [&](SectionChunk *sc) {
-    sc->eqClass[0] = xxh3_64bits(sc->getContents());
+    sc->eqClass[0] = xxh3_64bits(sc->getContents()) | (1U << 31);
   });
 
   // Iteratively combine relocation target hashes until they stabilize,
@@ -371,9 +375,21 @@ void ICF::run() {
     const unsigned nextSlot = (hashPass + 1) % 2;
     auto hashOne = [&](SectionChunk *sc) {
       uint32_t hash = sc->eqClass[currSlot];
-      for (Symbol *b : sc->symbols())
-        if (auto *sym = dyn_cast_or_null<DefinedRegular>(b))
-          hash = hash * 31 + sym->getChunk()->eqClass[currSlot];
+      for (Symbol *b : sc->symbols()) {
+        if (!b)
+          continue;
+        if (auto *sym = dyn_cast<DefinedRegular>(b)) {
+          uint32_t refHash = sym->getValue() + sym->getChunk()->eqClass[currSlot];
+          hash ^= refHash + 0x9e3779b9 + (hash << 6) + (hash >> 2);
+        } else if (auto *abs = dyn_cast<DefinedAbsolute>(b)) {
+          uint32_t refHash = static_cast<uint32_t>(abs->getVA());
+          hash ^= refHash + 0x9e3779b9 + (hash << 6) + (hash >> 2);
+        } else {
+          uint32_t refHash =
+              static_cast<uint32_t>(reinterpret_cast<uintptr_t>(b) >> 4);
+          hash ^= refHash + 0x9e3779b9 + (hash << 6) + (hash >> 2);
+        }
+      }
       uint32_t nextHash = hash | (1U << 31);
       bool changed = nextHash != sc->eqClass[currSlot];
       sc->eqClass[nextSlot] = nextHash;
@@ -419,16 +435,23 @@ void ICF::run() {
   auto byEqClass = [](const SectionChunk *a, const SectionChunk *b) {
     return a->eqClass[0] < b->eqClass[0];
   };
-  llvm::stable_sort(chunks, byEqClass);
+  parallelSort(chunks, byEqClass);
 
-  // Compare static contents and assign unique IDs for each static content.
-  forEachClass([&](size_t begin, size_t end) { segregate(begin, end, true); });
+  forEachClass([&](size_t begin, size_t end) {
+    if (end - begin > 1)
+      segregate(begin, end, true);
+    else
+      chunks[begin]->eqClass[(cnt + 1) % 2] = end;
+  });
 
-  // Split groups by comparing relocations until convergence is obtained.
   do {
     repeat.store(false, std::memory_order_relaxed);
-    forEachClass(
-        [&](size_t begin, size_t end) { segregate(begin, end, false); });
+    forEachClass([&](size_t begin, size_t end) {
+      if (end - begin > 1)
+        segregate(begin, end, false);
+      else
+        chunks[begin]->eqClass[(cnt + 1) % 2] = end;
+    });
   } while (repeat.load(std::memory_order_relaxed));
 
   log("ICF needed " + Twine(cnt) + " iterations");

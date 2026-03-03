@@ -75,6 +75,7 @@
 #include "llvm/TextAPI/InterfaceFile.h"
 
 #include <optional>
+#include <mutex>
 #include <type_traits>
 
 using namespace llvm;
@@ -213,21 +214,37 @@ static bool compatWithTargetArch(const InputFile *file, const Header *hdr) {
 // Theoretically this caching could be more efficient by hoisting it, but that
 // would require altering many callers to track the state.
 DenseMap<CachedHashStringRef, MemoryBufferRef> macho::cachedReads;
+static std::mutex cachedReadsMu;
 // Open a given file path and return it as a memory-mapped file.
-std::optional<MemoryBufferRef> macho::readFile(StringRef path) {
+// Thread-safe: cachedReadsMu protects cachedReads, make<>, bAlloc, and tar.
+std::optional<MemoryBufferRef> macho::readFile(StringRef path,
+                                               bool reportError) {
   CachedHashStringRef key(path);
-  auto entry = cachedReads.find(key);
-  if (entry != cachedReads.end())
-    return entry->second;
+  {
+    std::lock_guard<std::mutex> lock(cachedReadsMu);
+    auto entry = cachedReads.find(key);
+    if (entry != cachedReads.end())
+      return entry->second;
+  }
 
+  // File I/O runs unlocked so multiple threads can read concurrently.
   ErrorOr<std::unique_ptr<MemoryBuffer>> mbOrErr = MemoryBuffer::getFile(path);
   if (std::error_code ec = mbOrErr.getError()) {
-    error("cannot open " + path + ": " + ec.message());
+    if (reportError)
+      error("cannot open " + path + ": " + ec.message());
     return std::nullopt;
   }
 
   std::unique_ptr<MemoryBuffer> &mb = *mbOrErr;
   MemoryBufferRef mbref = mb->getMemBufferRef();
+
+  // Lock for all mutations: make<>/bAlloc use non-thread-safe allocators,
+  // and cachedReads + tar are shared mutable state.
+  std::lock_guard<std::mutex> lock(cachedReadsMu);
+  auto existing = cachedReads.find(key);
+  if (existing != cachedReads.end())
+    return existing->second;
+
   make<std::unique_ptr<MemoryBuffer>>(std::move(mb)); // take mb ownership
 
   // If this is a regular non-fat file, return it.
@@ -254,7 +271,8 @@ std::optional<MemoryBufferRef> macho::readFile(StringRef path) {
   for (uint32_t i = 0, n = read32be(&hdr->nfat_arch); i < n; ++i) {
     if (reinterpret_cast<const char *>(arch + i + 1) >
         buf + mbref.getBufferSize()) {
-      error(path + ": fat_arch struct extends beyond end of file");
+      if (reportError)
+        error(path + ": fat_arch struct extends beyond end of file");
       return std::nullopt;
     }
 
@@ -272,17 +290,22 @@ std::optional<MemoryBufferRef> macho::readFile(StringRef path) {
 
     uint32_t offset = read32be(&arch[i].offset);
     uint32_t size = read32be(&arch[i].size);
-    if (offset + size > mbref.getBufferSize())
-      error(path + ": slice extends beyond end of file");
+    if (offset + size > mbref.getBufferSize()) {
+      if (reportError)
+        error(path + ": slice extends beyond end of file");
+      return std::nullopt;
+    }
+    MemoryBufferRef sliceRef(StringRef(buf + offset, size), path.copy(bAlloc));
     if (tar)
       tar->append(relativeToRoot(path), mbref.getBuffer());
-    return cachedReads[key] = MemoryBufferRef(StringRef(buf + offset, size),
-                                              path.copy(bAlloc));
+    return cachedReads[key] = sliceRef;
   }
 
   auto targetArchName = getArchName(target->cpuType, target->cpuSubtype);
-  warn(path + ": ignoring file because it is universal (" + join(archs, ",") +
-       ") but does not contain the " + targetArchName + " architecture");
+  if (reportError) {
+    warn(path + ": ignoring file because it is universal (" + join(archs, ",") +
+         ") but does not contain the " + targetArchName + " architecture");
+  }
   return std::nullopt;
 }
 

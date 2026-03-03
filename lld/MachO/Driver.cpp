@@ -541,6 +541,63 @@ static void addFileList(StringRef path, bool isLazy) {
     addFile(rerootPath(path), LoadType::CommandLine, isLazy);
 }
 
+static void prefetchInputFiles(const InputArgList &args) {
+  TimeTraceScope timeScope("Prefetch input files");
+  SmallVector<StringRef, 0> paths;
+  paths.reserve(args.size());
+
+  auto pushPath = [&](StringRef path) {
+    if (path.empty())
+      return;
+    paths.push_back(saver().save(rerootPath(path)));
+  };
+
+  for (const Arg *arg : args) {
+    const Option &opt = arg->getOption();
+    switch (opt.getID()) {
+    case OPT_INPUT:
+    case OPT_needed_library:
+    case OPT_reexport_library:
+    case OPT_weak_library:
+    case OPT_force_load:
+    case OPT_load_hidden:
+      pushPath(arg->getValue());
+      break;
+    case OPT_filelist: {
+      std::optional<MemoryBufferRef> buffer =
+          readFile(arg->getValue(), /*reportError=*/false);
+      if (!buffer)
+        break;
+      for (StringRef path : args::getLines(*buffer))
+        pushPath(path);
+      break;
+    }
+    default:
+      break;
+    }
+  }
+
+  if (paths.empty())
+    return;
+
+  DenseSet<StringRef> seen;
+  SmallVector<StringRef, 0> uniquePaths;
+  uniquePaths.reserve(paths.size());
+  for (StringRef path : paths)
+    if (seen.insert(path).second)
+      uniquePaths.push_back(path);
+
+  if (parallel::strategy.ThreadsRequested == 1 || uniquePaths.size() < 8) {
+    for (StringRef path : uniquePaths)
+      (void)readFile(path, /*reportError=*/false);
+    return;
+  }
+
+  parallelForEach(uniquePaths, [](StringRef path) {
+    (void)readFile(path, /*reportError=*/false);
+  });
+}
+
 // We expect sub-library names of the form "libfoo", which will match a dylib
 // with a path of .*/libfoo.{dylib, tbd}.
 // XXX ld64 seems to ignore the extension entirely when matching sub-libraries;
@@ -1130,6 +1187,9 @@ static void handleSymbolPatterns(InputArgList &args,
 
 static void createFiles(const InputArgList &args) {
   TimeTraceScope timeScope("Load input files");
+  // Keep --reproduce artifact sequencing identical to the legacy load path.
+  if (!tar)
+    prefetchInputFiles(args);
   // This loop should be reserved for options whose exact ordering matters.
   // Other options should be handled via filtered() and/or getLastArg().
   bool isLazy = false;

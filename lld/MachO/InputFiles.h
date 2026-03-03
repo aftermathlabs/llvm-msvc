@@ -334,7 +334,8 @@ extern llvm::SetVector<InputFile *> inputFiles;
 extern llvm::DenseMap<llvm::CachedHashStringRef, MemoryBufferRef> cachedReads;
 extern llvm::SmallVector<StringRef> unprocessedLCLinkerOptions;
 
-std::optional<MemoryBufferRef> readFile(StringRef path);
+std::optional<MemoryBufferRef> readFile(StringRef path,
+                                        bool reportError = true);
 
 void extract(InputFile &file, StringRef reason);
 

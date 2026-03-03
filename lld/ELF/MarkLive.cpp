@@ -33,6 +33,7 @@
 #include "llvm/Object/ELF.h"
 #include "llvm/Support/Parallel.h"
 #include "llvm/Support/TimeProfiler.h"
+#include <algorithm>
 #include <vector>
 
 using namespace llvm;
@@ -43,6 +44,13 @@ using namespace lld;
 using namespace lld::elf;
 
 namespace {
+static size_t getParallelWorklistThreshold() {
+  unsigned threads =
+      std::max(1U, parallel::strategy.compute_thread_count());
+  size_t threshold = static_cast<size_t>(threads) * 2048;
+  return std::clamp<size_t>(threshold, 4096, 65536);
+}
+
 template <class ELFT> class MarkLive {
 public:
   MarkLive(unsigned partition) : partition(partition) {}
@@ -304,11 +312,11 @@ template <class ELFT> void MarkLive<ELFT>::run() {
 }
 
 template <class ELFT> void MarkLive<ELFT>::mark() {
+  const size_t parallelThreshold = getParallelWorklistThreshold();
+  const bool canParallelize = parallel::strategy.ThreadsRequested != 1;
   // Mark all reachable sections.
   while (!queue.empty()) {
-    static constexpr size_t kParallelWorklistThreshold = 2048;
-    if (parallel::strategy.ThreadsRequested != 1 &&
-        queue.size() >= kParallelWorklistThreshold) {
+    if (canParallelize && queue.size() >= parallelThreshold) {
       struct PendingReloc {
         Symbol *sym = nullptr;
         InputSectionBase *target = nullptr;
@@ -321,8 +329,9 @@ template <class ELFT> void MarkLive<ELFT>::mark() {
       };
 
       SmallVector<InputSection *, 0> batch;
-      batch.reserve(queue.size());
-      while (!queue.empty())
+      size_t batchLimit = std::min(queue.size(), parallelThreshold * 8);
+      batch.reserve(batchLimit);
+      for (size_t i = 0; i < batchLimit && !queue.empty(); ++i)
         batch.push_back(queue.pop_back_val());
 
       std::vector<PendingRefs> pending(batch.size());
@@ -359,7 +368,7 @@ template <class ELFT> void MarkLive<ELFT>::mark() {
         for (const PendingReloc &pendingReloc : pending[i].relocs) {
           Symbol *sym = pendingReloc.sym;
           sym->used = true;
-          if (dyn_cast<Defined>(sym)) {
+          if (isa<Defined>(sym)) {
             if (pendingReloc.target)
               enqueue(pendingReloc.target, pendingReloc.targetOffset);
             continue;

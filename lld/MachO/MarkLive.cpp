@@ -26,6 +26,13 @@ namespace lld::macho {
 using namespace llvm;
 using namespace llvm::MachO;
 
+static size_t getParallelThreshold(size_t multiplier = 256,
+                                   size_t lo = 512, size_t hi = 8192) {
+  unsigned threads = std::max(1U, parallel::strategy.compute_thread_count());
+  size_t threshold = static_cast<size_t>(threads) * multiplier;
+  return std::clamp<size_t>(threshold, lo, hi);
+}
+
 struct WhyLiveEntry {
   InputSection *isec;
   // Keep track of the entry that caused us to mark `isec` as live.
@@ -174,21 +181,24 @@ void MarkLiveImpl<RecordWhyLive>::markTransitively() {
   };
 
   auto processWorklist = [&]() {
-    static constexpr size_t kParallelTransitWorklistThreshold = 512;
+    const size_t parallelThreshold =
+        RecordWhyLive ? SIZE_MAX : getParallelThreshold();
+    const bool canParallelize =
+        !RecordWhyLive && parallel::strategy.ThreadsRequested != 1;
     while (!worklist.empty()) {
       // Keep -why_live on the existing serial path to preserve its output
       // stability, while accelerating the default mark-live traversal.
       if constexpr (!RecordWhyLive) {
-        if (parallel::strategy.ThreadsRequested != 1 &&
-            worklist.size() >= kParallelTransitWorklistThreshold) {
+        if (canParallelize && worklist.size() >= parallelThreshold) {
           struct PendingRefs {
             SmallVector<std::pair<InputSection *, uint64_t>, 0> sections;
             SmallVector<Symbol *, 0> symbols;
           };
 
           SmallVector<WorklistEntry *, 0> batch;
-          batch.reserve(worklist.size());
-          while (!worklist.empty())
+          size_t batchLimit = std::min(worklist.size(), parallelThreshold * 8);
+          batch.reserve(batchLimit);
+          for (size_t i = 0; i < batchLimit && !worklist.empty(); ++i)
             batch.push_back(worklist.pop_back_val());
 
           std::vector<PendingRefs> pending(batch.size());
@@ -302,10 +312,10 @@ void markLive() {
     return externsAreRoots && !defined->privateExtern;
   };
 
-  static constexpr size_t kParallelRootScanThreshold = 4096;
+  size_t parallelRootScanThreshold = getParallelThreshold();
   static constexpr size_t kRootScanChunkSize = 2048;
   if (parallel::strategy.ThreadsRequested != 1 &&
-      symbols.size() >= kParallelRootScanThreshold) {
+      symbols.size() >= parallelRootScanThreshold) {
     size_t numChunks = (symbols.size() + kRootScanChunkSize - 1) /
                        kRootScanChunkSize;
     std::vector<SmallVector<Symbol *, 0>> rootsByChunk(numChunks);
@@ -346,10 +356,10 @@ void markLive() {
     return type == S_MOD_INIT_FUNC_POINTERS ||
            type == S_MOD_TERM_FUNC_POINTERS;
   };
-  static constexpr size_t kParallelRootSectionScanThreshold = 4096;
+  size_t parallelRootSectionScanThreshold = getParallelThreshold();
   static constexpr size_t kRootSectionScanChunkSize = 2048;
   if (parallel::strategy.ThreadsRequested != 1 &&
-      inputSections.size() >= kParallelRootSectionScanThreshold) {
+      inputSections.size() >= parallelRootSectionScanThreshold) {
     size_t numChunks =
         (inputSections.size() + kRootSectionScanChunkSize - 1) /
         kRootSectionScanChunkSize;
