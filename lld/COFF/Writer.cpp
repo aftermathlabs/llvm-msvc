@@ -2355,7 +2355,7 @@ void Writer::writeBuildId() {
     memcpy(buildId->buildId->PDB70.Signature, &hash, 8);
     // Timestamp uses 64-bit hash data; keep a fixed payload in the other half.
     // Change PDB signature.
-    memcpy(&buildId->buildId->PDB70.Signature[8], "NewWorld", 8);
+    memcpy(&buildId->buildId->PDB70.Signature[8], "LLD PDB.", 8);
   }
 
   if (debugDirectory)
