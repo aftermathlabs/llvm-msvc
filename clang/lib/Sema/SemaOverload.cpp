@@ -6228,13 +6228,15 @@ Sema::EvaluateConvertedConstantExpression(Expr *E, QualType T, APValue &Value,
     for (unsigned I = 0; I < Notes.size(); ++I)
       Diag(Notes[I].first, Notes[I].second);
   } else {
-#ifdef _WIN32
+// #ifdef _WIN32
+//     Diag(E->getBeginLoc(), diag::warn_expr_not_cce)
+//         << CCE << E->getSourceRange();
+// #else
+//     Diag(E->getBeginLoc(), diag::err_expr_not_cce)
+//         << CCE << E->getSourceRange();
+// #endif
     Diag(E->getBeginLoc(), diag::warn_expr_not_cce)
         << CCE << E->getSourceRange();
-#else
-    Diag(E->getBeginLoc(), diag::err_expr_not_cce)
-        << CCE << E->getSourceRange();
-#endif
     for (unsigned I = 0; I < Notes.size(); ++I)
       Diag(Notes[I].first, Notes[I].second);
   }
