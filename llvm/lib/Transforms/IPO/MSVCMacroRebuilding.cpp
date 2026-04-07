@@ -1,6 +1,7 @@
 #include "llvm/Transforms/IPO/MSVCMacroRebuilding.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Demangle/Demangle.h"
+#include "llvm/IR/Constants.h"
 #include "llvm/IR/Function.h"
 #include "llvm/IR/Module.h"
 
