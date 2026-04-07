@@ -769,6 +769,11 @@ public:
   /// strlen, false otherwise.
   bool tryEvaluateStrLen(uint64_t &Result, ASTContext &Ctx) const;
 
+  /// If the current Expr can be evaluated to a pointer to a null-terminated
+  /// constant string, return the constant string (without the terminating
+  /// null).
+  std::optional<std::string> tryEvaluateString(ASTContext &Ctx) const;
+
   bool EvaluateCharRangeAsString(std::string &Result,
                                  const Expr *SizeExpression,
                                  const Expr *PtrExpression, ASTContext &Ctx,

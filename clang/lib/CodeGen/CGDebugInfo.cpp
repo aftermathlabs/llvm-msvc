@@ -3416,6 +3416,32 @@ llvm::DIMacroFile *CGDebugInfo::CreateTempMacroFile(llvm::DIMacroFile *Parent,
   return DBuilder.createTempMacroFile(Parent, Line, FName);
 }
 
+llvm::DILocation *CGDebugInfo::CreateTrapFailureMessageFor(
+    llvm::DebugLoc TrapLocation, StringRef Category, StringRef FailureMsg) {
+  SmallString<64> FuncName("__clang_trap_msg");
+
+  FuncName += "$";
+  FuncName += Category;
+  FuncName += "$";
+  FuncName += FailureMsg;
+
+  llvm::DISubprogram *&SP = InlinedSubprogramMap[FuncName];
+
+  if (!SP) {
+    llvm::DISubroutineType *DIFnTy = DBuilder.createSubroutineType(nullptr);
+    SP = DBuilder.createFunction(
+        /*Scope=*/TrapLocation->getFile(), /*Name=*/FuncName,
+        /*LinkageName=*/StringRef(), /*File=*/TrapLocation->getFile(),
+        /*LineNo=*/0, /*Ty=*/DIFnTy, /*ScopeLine=*/0,
+        /*Flags=*/llvm::DINode::FlagArtificial,
+        /*SPFlags=*/llvm::DISubprogram::SPFlagDefinition,
+        /*TParams=*/nullptr, /*Decl=*/nullptr, /*ThrownTypes=*/nullptr);
+  }
+
+  return llvm::DILocation::get(CGM.getLLVMContext(), /*Line=*/0, /*Column=*/0,
+                               /*Scope=*/SP, /*InlinedAt=*/TrapLocation);
+}
+
 static QualType UnwrapTypeForDebugInfo(QualType T, const ASTContext &C) {
   Qualifiers Quals;
   do {

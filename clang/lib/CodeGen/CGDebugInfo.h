@@ -25,6 +25,7 @@
 #include "clang/Basic/SourceLocation.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
+#include "llvm/ADT/StringMap.h"
 #include "llvm/IR/DIBuilder.h"
 #include "llvm/IR/DebugInfo.h"
 #include "llvm/IR/ValueHandle.h"
@@ -160,6 +161,10 @@ class CGDebugInfo {
       NamespaceAliasCache;
   llvm::DenseMap<const Decl *, llvm::TypedTrackingMDRef<llvm::DIDerivedType>>
       StaticDataMemberCache;
+
+  /// Cache of inlined subprograms used for verbose traps / synthetic inline
+  /// frames, keyed by the encoded function name.
+  llvm::StringMap<llvm::DISubprogram *> InlinedSubprogramMap;
 
   using ParamDecl2StmtTy = llvm::DenseMap<const ParmVarDecl *, const Stmt *>;
   using Param2DILocTy =
@@ -596,6 +601,14 @@ public:
   llvm::DIMacroFile *CreateTempMacroFile(llvm::DIMacroFile *Parent,
                                          SourceLocation LineLoc,
                                          SourceLocation FileLoc);
+
+  /// Create a debug location for a verbose trap with category and message
+  /// encoded into an artificial inline frame. The encoded function name is:
+  ///   `<Prefix>$<Category>$<Message>`
+  /// where `<Prefix>` is "__clang_trap_msg".
+  llvm::DILocation *CreateTrapFailureMessageFor(llvm::DebugLoc TrapLocation,
+                                                StringRef Category,
+                                                StringRef FailureMsg);
 
   Param2DILocTy &getParamDbgMappings() { return ParamDbgMappings; }
   ParamDecl2StmtTy &getCoroutineParameterMappings() {
