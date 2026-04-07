@@ -908,9 +908,10 @@ void EmitAssemblyHelper::RunOptimizationPipeline(
   PB.crossRegisterProxies(LAM, FAM, CGAM, MAM);
 
   ModulePassManager MPM;
-  // Add a verifier pass, before any other passes, to catch CodeGen issues.
+#ifndef NDEBUG
   if (CodeGenOpts.VerifyModule)
     MPM.addPass(VerifierPass());
+#endif
 
   if (!CodeGenOpts.DisableLLVMPasses) {
     // Map our optimization levels into one of the distinct levels used to
@@ -1036,30 +1037,28 @@ void EmitAssemblyHelper::RunOptimizationPipeline(
 
   // Pre pass
   {
-    // IR auto generator pass(Pre)
-    MPM.addPassToFront(IRAutoGeneratorPrePass(CodeGenOpts.AutoGenerateIR,
-                                                "IRAutoGeneratorPre"));
+    if (CodeGenOpts.AutoGenerateIR)
+      MPM.addPassToFront(IRAutoGeneratorPrePass(true, "IRAutoGeneratorPre"));
 
-    // Bitcode auto generator pass(Pre)
-    MPM.addPassToFront(BitcodeAutoGeneratorPrePass(
-          CodeGenOpts.AutoGenerateBitcode, "BitcodeAutoGeneratorPre"));
+    if (CodeGenOpts.AutoGenerateBitcode)
+      MPM.addPassToFront(
+          BitcodeAutoGeneratorPrePass(true, "BitcodeAutoGeneratorPre"));
 
     // Convert @llvm.global.annotations to !annotation metadata.
     MPM.addPassToFront(Annotation2MetadataPass());
-    
-    // MSVC macro rebuilding pass (this pass must be at the top)
-    MPM.addPassToFront(MSVCMacroRebuildingPass());
+
+    if (LangOpts.MicrosoftExt || LangOpts.MSVCCompat)
+      MPM.addPassToFront(MSVCMacroRebuildingPass());
   }
 
   // Post pass
   {
-    // IR auto generator pass(Post)
-    MPM.addPass(IRAutoGeneratorPostPass(CodeGenOpts.AutoGenerateIR,
-                                          "IRAutoGeneratorPost"));
-    
-    // Bitcode auto generator pass(Post)
-    MPM.addPass(BitcodeAutoGeneratorPostPass(CodeGenOpts.AutoGenerateBitcode,
-                                              "BitcodeAutoGeneratorPost"));
+    if (CodeGenOpts.AutoGenerateIR)
+      MPM.addPass(IRAutoGeneratorPostPass(true, "IRAutoGeneratorPost"));
+
+    if (CodeGenOpts.AutoGenerateBitcode)
+      MPM.addPass(
+          BitcodeAutoGeneratorPostPass(true, "BitcodeAutoGeneratorPost"));
   }
   
   if (Action == Backend_EmitBC || Action == Backend_EmitLL) {

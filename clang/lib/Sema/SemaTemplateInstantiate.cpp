@@ -2602,11 +2602,10 @@ TypeSourceInfo *Sema::SubstType(TypeLoc TL,
 
   if (!TL.getType()->isInstantiationDependentType() &&
       !TL.getType()->isVariablyModifiedType()) {
-    // FIXME: Make a copy of the TypeLoc data here, so that we can
-    // return a new TypeSourceInfo. Inefficient!
-    TypeLocBuilder TLB;
-    TLB.pushFullCopy(TL);
-    return TLB.getTypeSourceInfo(Context, TL.getType());
+    TypeSourceInfo *DI =
+        Context.CreateTypeSourceInfo(TL.getType(), TL.getFullDataSize());
+    DI->getTypeLoc().initializeFullCopy(TL);
+    return DI;
   }
 
   TemplateInstantiator Instantiator(*this, Args, Loc, Entity);

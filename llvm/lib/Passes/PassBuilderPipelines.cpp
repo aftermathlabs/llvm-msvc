@@ -229,6 +229,11 @@ static cl::opt<int> PreInlineThreshold(
     cl::desc("Control the amount of inlining in pre-instrumentation inliner "
              "(default = 75)"));
 
+static cl::opt<int> PreInlineHintThreshold(
+    "preinline-hint-threshold", cl::Hidden, cl::init(150),
+    cl::desc("Hint threshold for pre-instrumentation inliner "
+             "(default = 150)"));
+
 static cl::opt<bool>
     EnableGVNHoist("enable-gvn-hoist",
                    cl::desc("Enable the GVN hoisting pass (default = off)"));
@@ -511,7 +516,6 @@ PassBuilder::buildO1FunctionSimplificationPipeline(OptimizationLevel Level,
   FPM.addPass(ADCEPass());
   FPM.addPass(
       SimplifyCFGPass(SimplifyCFGOptions().convertSwitchRangeToICmp(true)));
-  FPM.addPass(InstCombinePass());
   invokePeepholeEPCallbacks(FPM, Level);
 
   return FPM;
@@ -742,11 +746,8 @@ void PassBuilder::addPreInlinerPasses(ModulePassManager &MPM,
 
   IP.DefaultThreshold = PreInlineThreshold;
 
-  // FIXME: The hint threshold has the same value used by the regular inliner
-  // when not optimzing for size. This should probably be lowered after
-  // performance testing.
-  // FIXME: this comment is cargo culted from the old pass manager, revisit).
-  IP.HintThreshold = Level.isOptimizingForSize() ? PreInlineThreshold : 325;
+  IP.HintThreshold =
+      Level.isOptimizingForSize() ? PreInlineThreshold : PreInlineHintThreshold;
   ModuleInlinerWrapperPass MIWP(
       IP, /* MandatoryFirst */ true,
       InlineContext{LTOPhase, InlinePass::EarlyInliner});
@@ -1416,17 +1417,12 @@ PassBuilder::buildModuleOptimizationPipeline(OptimizationLevel Level,
   OptimizePM.addPass(createFunctionToLoopPassAdaptor(
       std::move(LPM), /*UseMemorySSA=*/false, /*UseBlockFrequencyInfo=*/false));
 
-  // Distribute loops to allow partial vectorization.  I.e. isolate dependences
-  // into separate loop that would otherwise inhibit vectorization.  This is
-  // currently only performed for loops marked with the metadata
-  // llvm.loop.distribute=true or when -enable-loop-distribute is specified.
-  OptimizePM.addPass(LoopDistributePass());
-
-  // Populates the VFABI attribute with the scalar-to-vector mappings
-  // from the TargetLibraryInfo.
-  OptimizePM.addPass(InjectTLIMappings());
-
-  addVectorPasses(Level, OptimizePM, /* IsFullLTO */ false);
+  // Skip vectorization-related passes on Windows where they are disabled.
+  if (!TM || !TM->getTargetTriple().isOSWindows()) {
+    OptimizePM.addPass(LoopDistributePass());
+    OptimizePM.addPass(InjectTLIMappings());
+    addVectorPasses(Level, OptimizePM, /* IsFullLTO */ false);
+  }
 
   // LoopSink pass sinks instructions hoisted by LICM, which serves as a
   // canonicalization pass that enables other optimizations. As a result,
@@ -1914,9 +1910,10 @@ PassBuilder::buildLTODefaultPipeline(OptimizationLevel Level,
   MainFPM.addPass(createFunctionToLoopPassAdaptor(
       std::move(LPM), /*UseMemorySSA=*/false, /*UseBlockFrequencyInfo=*/true));
 
-  MainFPM.addPass(LoopDistributePass());
-
-  addVectorPasses(Level, MainFPM, /* IsFullLTO */ true);
+  if (!TM || !TM->getTargetTriple().isOSWindows()) {
+    MainFPM.addPass(LoopDistributePass());
+    addVectorPasses(Level, MainFPM, /* IsFullLTO */ true);
+  }
 
   // Run the OpenMPOpt CGSCC pass again late.
   MPM.addPass(createModuleToPostOrderCGSCCPassAdaptor(
