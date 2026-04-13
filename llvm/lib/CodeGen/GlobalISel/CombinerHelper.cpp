@@ -5033,6 +5033,7 @@ MachineInstr *CombinerHelper::buildUDivUsingMul(MachineInstr &MI) {
   MIB.setInstrAndDebugLoc(MI);
 
   bool UseNPQ = false;
+  bool Use33BitOptimization = false;
   SmallVector<Register, 16> PreShifts, PostShifts, MagicFactors, NPQFactors;
 
   auto BuildUDIVPattern = [&](const Constant *C) {
@@ -5049,6 +5050,29 @@ MachineInstr *CombinerHelper::buildUDivUsingMul(MachineInstr &MI) {
     if (!Divisor.isOne()) {
       UnsignedDivisionByConstantInfo magics =
           UnsignedDivisionByConstantInfo::get(Divisor);
+
+      // For 32-bit scalar division with IsAdd (33-bit magic), use optimized
+      // method on 64-bit targets: single 64x64->128 high multiply.
+      LLT WideTy64 = LLT::scalar(64);
+      bool Has64BitUMulH =
+          LI && isLegalOrBeforeLegalizer({TargetOpcode::G_UMULH, {WideTy64}});
+      if (EltBits == 32 && Ty.isScalar() && Has64BitUMulH && magics.IsAdd) {
+        unsigned OriginalShift = magics.PostShift + 33;
+        APInt RealMagic =
+            APInt(65, 1).shl(32) + magics.Magic.zext(65);
+        APInt ShiftedMagic = RealMagic.shl(64 - OriginalShift).trunc(64);
+        Use33BitOptimization = true;
+        MagicFactors.push_back(
+            MIB.buildConstant(WideTy64, ShiftedMagic).getReg(0));
+        PreShifts.push_back(
+            MIB.buildConstant(ScalarShiftAmtTy, 0).getReg(0));
+        NPQFactors.push_back(
+            MIB.buildConstant(ScalarTy, APInt::getZero(EltBits)).getReg(0));
+        PostShifts.push_back(
+            MIB.buildConstant(ScalarShiftAmtTy, 0).getReg(0));
+        UseNPQ = false;
+        return true;
+      }
 
       Magic = std::move(magics.Magic);
 
@@ -5094,6 +5118,18 @@ MachineInstr *CombinerHelper::buildUDivUsingMul(MachineInstr &MI) {
     PreShift = PreShifts[0];
     MagicFactor = MagicFactors[0];
     PostShift = PostShifts[0];
+  }
+
+  // Optimized path for 32-bit udiv with 33-bit magic on 64-bit targets.
+  if (Use33BitOptimization) {
+    LLT WideTy = LLT::scalar(64);
+    auto X64 = MIB.buildZExt(WideTy, LHS);
+    auto High = MIB.buildUMulH(WideTy, X64, MagicFactors[0]);
+    Register Q = MIB.buildTrunc(Ty, High).getReg(0);
+    auto One = MIB.buildConstant(Ty, 1);
+    auto IsOne = MIB.buildICmp(CmpInst::Predicate::ICMP_EQ,
+                               LLT::scalar(1), RHS, One);
+    return MIB.buildSelect(Ty, IsOne, LHS, Q);
   }
 
   Register Q = LHS;
