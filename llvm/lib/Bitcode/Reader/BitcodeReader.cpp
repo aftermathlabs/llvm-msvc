@@ -3105,18 +3105,24 @@ Error BitcodeReader::parseConstants() {
         V = ConstantFP::get(Context, APFloat(APFloat::IEEEdouble(),
                                              APInt(64, Record[0])));
       else if (CurTy->isX86_FP80Ty()) {
-        // Bits are not stored the same way as a normal i80 APInt, compensate.
+        if (Record.size() < 2)
+          return error("Invalid float const record");
         uint64_t Rearrange[2];
         Rearrange[0] = (Record[1] & 0xffffLL) | (Record[0] << 16);
         Rearrange[1] = Record[0] >> 48;
         V = ConstantFP::get(Context, APFloat(APFloat::x87DoubleExtended(),
                                              APInt(80, Rearrange)));
-      } else if (CurTy->isFP128Ty())
+      } else if (CurTy->isFP128Ty()) {
+        if (Record.size() < 2)
+          return error("Invalid float const record");
         V = ConstantFP::get(Context, APFloat(APFloat::IEEEquad(),
                                              APInt(128, Record)));
-      else if (CurTy->isPPC_FP128Ty())
+      } else if (CurTy->isPPC_FP128Ty()) {
+        if (Record.size() < 2)
+          return error("Invalid float const record");
         V = ConstantFP::get(Context, APFloat(APFloat::PPCDoubleDouble(),
                                              APInt(128, Record)));
+      }
       else
         V = UndefValue::get(CurTy);
       break;

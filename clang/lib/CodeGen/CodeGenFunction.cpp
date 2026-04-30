@@ -2330,8 +2330,7 @@ void CodeGenFunction::EmitVariablyModifiedType(QualType type) {
       if (const Expr *sizeExpr = vat->getSizeExpr()) {
         // It's possible that we might have emitted this already,
         // e.g. with a typedef and a pointer to it.
-        llvm::Value *&entry = VLASizeMap[sizeExpr];
-        if (!entry) {
+        if (!VLASizeMap.lookup(sizeExpr)) {
           llvm::Value *size = EmitScalarExpr(sizeExpr);
 
           // C11 6.7.6.2p5:
@@ -2356,7 +2355,8 @@ void CodeGenFunction::EmitVariablyModifiedType(QualType type) {
           // Always zexting here would be wrong if it weren't
           // undefined behavior to have a negative bound.
           // FIXME: What about when size's type is larger than size_t?
-          entry = Builder.CreateIntCast(size, SizeTy, /*signed*/ false);
+          VLASizeMap[sizeExpr] =
+              Builder.CreateIntCast(size, SizeTy, /*signed*/ false);
         }
       }
       type = vat->getElementType();
