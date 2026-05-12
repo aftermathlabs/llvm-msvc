@@ -55,7 +55,7 @@ public:
     for (MachineBasicBlock &MBB : MF) {
       MachineInstr *FirstInstr = nullptr;
       for (MachineInstr &MI : MBB) {
-        if (!MI.isPseudo())
+        if (!MI.isPseudo() || MI.isCall())
           FirstInstr = &MI;
         if (MI.isCall()) {
           if (DILocation *DL = MI.getDebugLoc()) {
