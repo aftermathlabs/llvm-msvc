@@ -15,10 +15,6 @@ if(LLVM_ENABLE_PIC)
 
   add_llvm_library(Remarks SHARED INSTALL_WITH_TOOLCHAIN ${SOURCES})
 
-  if (LLVM_INTEGRATED_CRT_ALLOC AND MSVC)
-    # Make sure we search LLVMSupport first, before the CRT libs
-    set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -INCLUDE:malloc")
-  endif()
   
   install(FILES ${LLVM_MAIN_INCLUDE_DIR}/llvm-c/Remarks.h
     DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/llvm-c"

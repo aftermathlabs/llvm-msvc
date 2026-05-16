@@ -134,7 +134,7 @@ endif()
 # ManagedStatic.cpp uses <pthread>.
 target_link_libraries(SupportTests PRIVATE LLVMTestingSupport ${LLVM_PTHREAD_LIB})
 
-if(NOT LLVM_INTEGRATED_CRT_ALLOC)
+if(NOT LLVM_ENABLE_MIMALLOC)
   # The test doesn't pass when using a custom allocator, PR47881.
   add_subdirectory(DynamicLibrary)
 endif()

@@ -91,29 +91,6 @@ if(LLVM_WITH_Z3)
   set(system_libs ${system_libs} ${Z3_LIBRARIES})
 endif()
 
-# Override the C runtime allocator on Windows with an external allocator
-if(LLVM_INTEGRATED_CRT_ALLOC)
-  if (NOT CMAKE_MSVC_RUNTIME_LIBRARY OR CMAKE_MSVC_RUNTIME_LIBRARY MATCHES "DLL$")
-    message(FATAL_ERROR "LLVM_INTEGRATED_CRT_ALLOC only works with CMAKE_MSVC_RUNTIME_LIBRARY set to MultiThreaded or MultiThreadedDebug.")
-  endif()
-
-  string(REGEX REPLACE "(/|\\\\)$" "" LLVM_INTEGRATED_CRT_ALLOC "${LLVM_INTEGRATED_CRT_ALLOC}")
-
-  if(NOT EXISTS "${LLVM_INTEGRATED_CRT_ALLOC}")
-    message(FATAL_ERROR "Cannot find the path to `git clone` for the CRT allocator! (${LLVM_INTEGRATED_CRT_ALLOC}). Currently, snmalloc and mimalloc are supported.")
-  endif()
-
-  if(LLVM_INTEGRATED_CRT_ALLOC MATCHES "snmalloc$")
-    set(ALLOCATOR_FILES "${LLVM_INTEGRATED_CRT_ALLOC}/src/snmalloc/override/new.cc")
-    set(system_libs ${system_libs} "mincore.lib" "-INCLUDE:malloc")
-  elseif(LLVM_INTEGRATED_CRT_ALLOC MATCHES "mimalloc$")
-    set(MIMALLOC_LIB "${LLVM_INTEGRATED_CRT_ALLOC}/out/msvc-x64/Release/mimalloc-static.lib")
-    if(NOT EXISTS "${MIMALLOC_LIB}")
-	  message(FATAL_ERROR "Cannot find the mimalloc static library. To build it, first apply the patch from https://github.com/microsoft/mimalloc/issues/268 then build the Release x64 target through ${LLVM_INTEGRATED_CRT_ALLOC}\\ide\\vs2019\\mimalloc.sln")
-    endif()
-    set(system_libs ${system_libs} "${MIMALLOC_LIB}" "-INCLUDE:malloc")
-  endif()
-endif()
 
 # FIXME: We are currently guarding AIX headers with _XOPEN_SOURCE=700.
 # See llvm/CMakeLists.txt. However, we need _SC_NPROCESSORS_ONLN in
@@ -259,7 +236,6 @@ add_llvm_component_library(LLVMSupport
   xxhash.cpp
   Z3Solver.cpp
 
-  ${ALLOCATOR_FILES}
   $<TARGET_OBJECTS:LLVMSupportBlake3>
 
 # System
@@ -332,17 +308,6 @@ set_property(TARGET LLVMSupport PROPERTY LLVM_SYSTEM_LIBS "${llvm_system_libs}")
 
 if(LLVM_ENABLE_MIMALLOC)
   llvm_link_mimalloc(LLVMSupport)
-endif()
-
-if(LLVM_INTEGRATED_CRT_ALLOC)
-  if(LLVM_INTEGRATED_CRT_ALLOC MATCHES "snmalloc$")
-    set_property(TARGET LLVMSupport PROPERTY CXX_STANDARD 17)
-    add_compile_definitions(_SILENCE_CXX17_ITERATOR_BASE_CLASS_DEPRECATION_WARNING)
-    if ("${CMAKE_CXX_COMPILER_ID}" MATCHES "Clang" AND
-        "${CMAKE_SYSTEM_PROCESSOR}" MATCHES "x86_64")
-      set_property(TARGET LLVMSupport PROPERTY COMPILE_FLAGS "-mcx16")
-    endif()
-  endif()
 endif()
 
 if(LLVM_WITH_Z3)
