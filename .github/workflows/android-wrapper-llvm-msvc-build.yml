@@ -34,6 +34,7 @@ jobs:
       run: |
         cmake -GNinja -Bbuild \
         -DCMAKE_INSTALL_PREFIX=install \
+        -DLLVM_ENABLE_MIMALLOC=ON \
         -DLLVM_INCLUDE_TESTS=OFF \
         -DLLVM_INCLUDE_EXAMPLES=OFF \
         -DLLVM_ENABLE_ASSERTIONS=OFF \
