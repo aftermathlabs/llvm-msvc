@@ -91,7 +91,7 @@ if(LLVM_WITH_Z3)
   set(system_libs ${system_libs} ${Z3_LIBRARIES})
 endif()
 
-# Override the C runtime allocator on Windows and embed it into LLVM tools & libraries
+# Override the C runtime allocator on Windows with an external allocator
 if(LLVM_INTEGRATED_CRT_ALLOC)
   if (NOT CMAKE_MSVC_RUNTIME_LIBRARY OR CMAKE_MSVC_RUNTIME_LIBRARY MATCHES "DLL$")
     message(FATAL_ERROR "LLVM_INTEGRATED_CRT_ALLOC only works with CMAKE_MSVC_RUNTIME_LIBRARY set to MultiThreaded or MultiThreadedDebug.")
@@ -100,14 +100,10 @@ if(LLVM_INTEGRATED_CRT_ALLOC)
   string(REGEX REPLACE "(/|\\\\)$" "" LLVM_INTEGRATED_CRT_ALLOC "${LLVM_INTEGRATED_CRT_ALLOC}")
 
   if(NOT EXISTS "${LLVM_INTEGRATED_CRT_ALLOC}")
-    message(FATAL_ERROR "Cannot find the path to `git clone` for the CRT allocator! (${LLVM_INTEGRATED_CRT_ALLOC}). Currently, rpmalloc, snmalloc and mimalloc are supported.")
+    message(FATAL_ERROR "Cannot find the path to `git clone` for the CRT allocator! (${LLVM_INTEGRATED_CRT_ALLOC}). Currently, snmalloc and mimalloc are supported.")
   endif()
 
-  if((LLVM_INTEGRATED_CRT_ALLOC MATCHES "rpmalloc$") OR LLVM_ENABLE_RPMALLOC)
-    add_compile_definitions(ENABLE_OVERRIDE ENABLE_PRELOAD)
-    set(ALLOCATOR_FILES "${LLVM_INTEGRATED_CRT_ALLOC}/rpmalloc/rpmalloc.c")
-    set(delayload_flags "${delayload_flags} -INCLUDE:malloc")
-  elseif(LLVM_INTEGRATED_CRT_ALLOC MATCHES "snmalloc$")
+  if(LLVM_INTEGRATED_CRT_ALLOC MATCHES "snmalloc$")
     set(ALLOCATOR_FILES "${LLVM_INTEGRATED_CRT_ALLOC}/src/snmalloc/override/new.cc")
     set(system_libs ${system_libs} "mincore.lib" "-INCLUDE:malloc")
   elseif(LLVM_INTEGRATED_CRT_ALLOC MATCHES "mimalloc$")
@@ -334,6 +330,9 @@ endif()
 
 set_property(TARGET LLVMSupport PROPERTY LLVM_SYSTEM_LIBS "${llvm_system_libs}")
 
+if(LLVM_ENABLE_MIMALLOC)
+  llvm_link_mimalloc(LLVMSupport)
+endif()
 
 if(LLVM_INTEGRATED_CRT_ALLOC)
   if(LLVM_INTEGRATED_CRT_ALLOC MATCHES "snmalloc$")

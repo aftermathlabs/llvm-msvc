@@ -86,14 +86,11 @@ Changes to LLVM infrastructure
 Changes to building LLVM
 ------------------------
 
-* LLVM now has rpmalloc version 1.4.5 in-tree, as a replacement C allocator for
-  hosted toolchains. This supports several host platforms such as Mac or Unix,
-  however currently only the Windows 64-bit LLVM release uses it.
-  This has a great benefit in terms of build times on Windows when using ThinLTO
-  linking, especially on machines with lots of cores, to an order of magnitude
-  or more. Clang compilation is also improved. Please see some build timings in
-  (`#91862 <https://github.com/llvm/llvm-project/pull/91862#issue-2291033962>`_)
-  For more information, refer to the **LLVM_ENABLE_RPMALLOC** option in `CMake variables <https://llvm.org/docs/CMake.html#llvm-related-variables>`_.
+* LLVM now uses mimalloc (Microsoft's high-performance allocator) as an
+  optional replacement allocator on all platforms (Windows, Linux, macOS).
+  This greatly improves build times on Windows when using ThinLTO linking,
+  and provides 3-7% speedup on macOS/Linux as well.
+  For more information, refer to the **LLVM_ENABLE_MIMALLOC** option in `CMake variables <https://llvm.org/docs/CMake.html#llvm-related-variables>`_.
 
 * The ``LLVM_ENABLE_TERMINFO`` flag has been removed. LLVM no longer depends on
   terminfo and now always uses the ``TERM`` environment variable for color

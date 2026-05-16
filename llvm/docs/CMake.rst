@@ -699,24 +699,24 @@ enabled sub-projects. Nearly all of these variable names begin with
   On Windows, allows embedding a different C runtime allocator into the LLVM
   tools and libraries. Using a lock-free allocator such as the ones listed below
   greatly decreases ThinLTO link time by about an order of magnitude. It also
-  midly improves Clang build times, by about 5-10%. At the moment, rpmalloc,
-  snmalloc and mimalloc are supported. Use the path to `git clone` to select
-  the respective allocator, for example:
+  mildly improves Clang build times, by about 5-10%. At the moment, snmalloc
+  and mimalloc are supported. Use the path to `git clone` to select the
+  respective allocator, for example:
 
   .. code-block:: console
 
-    $ D:\git> git clone https://github.com/mjansson/rpmalloc
-    $ D:\llvm-project> cmake ... -DLLVM_INTEGRATED_CRT_ALLOC=D:\git\rpmalloc
+    $ D:\git> git clone https://github.com/microsoft/mimalloc
+    $ D:\llvm-project> cmake ... -DLLVM_INTEGRATED_CRT_ALLOC=D:\git\mimalloc
 
   This option needs to be used along with the static CRT, ie. if building the
   Release target, add -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded.
-  Note that rpmalloc is also supported natively in-tree, see option below.
+  For a simpler cross-platform alternative, see LLVM_ENABLE_MIMALLOC below.
 
-**LLVM_ENABLE_RPMALLOC**:BOOL
-  Similar to LLVM_INTEGRATED_CRT_ALLOC, embeds the in-tree rpmalloc into the
-  host toolchain as a C runtime allocator. The version currently used is
-  rpmalloc 1.4.5. This option also implies linking with the static CRT, there's
-  no need to provide CMAKE_MSVC_RUNTIME_LIBRARY.
+**LLVM_ENABLE_MIMALLOC**:BOOL
+  Replace the default allocator with mimalloc (Microsoft's high-performance
+  allocator) on all platforms (Windows, Linux, macOS). The latest release is
+  fetched automatically via FetchContent. On Windows this also implies linking
+  with the static CRT; there's no need to provide CMAKE_MSVC_RUNTIME_LIBRARY.
 
 **LLVM_INSTALL_DOXYGEN_HTML_DIR**:STRING
   The path to install Doxygen-generated HTML documentation to. This path can

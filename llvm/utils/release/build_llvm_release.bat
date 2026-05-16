@@ -163,7 +163,7 @@ set common_cmake_flags=^
   -DCLANG_ENABLE_LIBXML2=OFF ^
   -DCMAKE_C_FLAGS="%common_compiler_flags%" ^
   -DCMAKE_CXX_FLAGS="%common_compiler_flags%" ^
-  -DLLVM_ENABLE_RPMALLOC=ON ^
+  -DLLVM_ENABLE_MIMALLOC=ON ^
   -DLLVM_ENABLE_PROJECTS="clang;clang-tools-extra;lld;compiler-rt;lldb;openmp"
 
 set cmake_profile_flags=""
