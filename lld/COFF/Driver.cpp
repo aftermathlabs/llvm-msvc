@@ -2323,6 +2323,17 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
       (config->machine == ARMNT || isAnyArm64(config->machine)))
     config->dynamicBase = true;
 
+  if (isAnyArm64(config->machine)) {
+    if (config->majorSubsystemVersion < 10) {
+      config->majorSubsystemVersion = 10;
+      config->minorSubsystemVersion = 0;
+    }
+    if (config->majorOSVersion < 10) {
+      config->majorOSVersion = 10;
+      config->minorOSVersion = 0;
+    }
+  }
+
   // Handle /export
   {
     llvm::TimeTraceScope timeScope("Parse /export");
