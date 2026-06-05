@@ -3050,8 +3050,8 @@ void AsmPrinter::emitAlignment(Align Alignment, const GlobalObject *GV,
   if (GV)
     Alignment = getGVAlignment(GV, GV->getParent()->getDataLayout(), Alignment);
 
-  //if (Alignment == Align(1))
-  //  return; // 1-byte aligned: no need to emit alignment.
+  if (Alignment == Align(1))
+    return; // 1-byte aligned: no need to emit alignment.
 
   if (getCurrentSection()->getKind().isText()) {
     const MCSubtargetInfo *STI = nullptr;
