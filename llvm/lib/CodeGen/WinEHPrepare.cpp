@@ -338,9 +338,19 @@ void llvm::calculateSEHStateForWinEH(const BasicBlock *BB, int State,
         // Retrive the new State from seh_try_begin
         State = EHInfo.InvokeStateMap[cast<InvokeInst>(TI)];
       else if (Fn && Fn->isIntrinsic() &&
-               Fn->getIntrinsicID() == Intrinsic::seh_try_end)
-        // end of current state, retrive new state from UnwindMap
-        State = EHInfo.SEHUnwindMap[State].ToState;
+               Fn->getIntrinsicID() == Intrinsic::seh_try_end) {
+        // End of the current __try: transition to the parent state recorded in
+        // SEHUnwindMap.  This must run for every in-range state, including 0
+        // (whose parent is normally the function scope, -1) -- otherwise code
+        // after a top-level __try stays marked as inside it and its enclosing
+        // __finally/__except is dropped from the unwind scope table.  Only skip
+        // the function scope itself (-1): it has no parent entry, so
+        // SEHUnwindMap[-1] would be an out-of-bounds access.  Deeply nested
+        // __try regions with side exits (return/continue/__leave) propagate -1
+        // here once an inner end has already unwound to function scope.
+        if (State >= 0)
+          State = EHInfo.SEHUnwindMap[State].ToState;
+      }
     }
     // Continue push successors into worklist
     for (auto *SuccBB : successors(BB)) {
