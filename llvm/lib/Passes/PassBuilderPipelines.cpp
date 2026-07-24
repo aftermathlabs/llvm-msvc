@@ -1162,7 +1162,8 @@ PassBuilder::buildModuleSimplificationPipeline(OptimizationLevel Level,
 void PassBuilder::addVectorPasses(OptimizationLevel Level,
                                   FunctionPassManager &FPM, bool IsFullLTO) {
   // Disable vector passes on windows.
-  if (TM->getTargetTriple().isOSWindows())
+  // TM may be null when opt is run without a target triple (e.g. empty IR).
+  if (TM && TM->getTargetTriple().isOSWindows())
     return;
 
   FPM.addPass(LoopVectorizePass(
