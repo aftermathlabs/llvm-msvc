@@ -1,0 +1,232 @@
+name: issue176-regression
+
+permissions:
+  actions: read
+  contents: read
+
+on:
+  workflow_run:
+    workflows:
+      - windows-llvm-msvc-build
+      - android-llvm-msvc-build
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      commit:
+        description: 'Commit SHA to test (defaults to the triggering ref)'
+        required: false
+      platform:
+        description: 'Which platform artifacts to test'
+        type: choice
+        options:
+          - all
+          - windows
+          - linux
+        default: all
+
+concurrency:
+  group: issue176-regression-${{ github.event.workflow_run.head_sha || github.sha }}-${{ github.event_name }}
+  cancel-in-progress: true
+
+jobs:
+  plan:
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'workflow_run' &&
+       github.event.workflow_run.conclusion == 'success')
+    runs-on: ubuntu-latest
+    outputs:
+      commit: ${{ steps.plan.outputs.commit }}
+      run_windows: ${{ steps.plan.outputs.run_windows }}
+      run_linux: ${{ steps.plan.outputs.run_linux }}
+      windows_run_id: ${{ steps.plan.outputs.windows_run_id }}
+      linux_run_id: ${{ steps.plan.outputs.linux_run_id }}
+    steps:
+      - name: Plan verification jobs
+        id: plan
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          WORKFLOW_NAME: ${{ github.event.workflow_run.name || '' }}
+          WORKFLOW_RUN_ID: ${{ github.event.workflow_run.id || '' }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+          INPUT_COMMIT: ${{ github.event.inputs.commit || '' }}
+          INPUT_PLATFORM: ${{ github.event.inputs.platform || 'all' }}
+        run: |
+          set -euo pipefail
+
+          commit="$HEAD_SHA"
+          if [ "$EVENT_NAME" = "workflow_dispatch" ] && [ -n "$INPUT_COMMIT" ]; then
+            commit="$INPUT_COMMIT"
+          fi
+
+          run_windows=false
+          run_linux=false
+          windows_run_id=
+          linux_run_id=
+
+          if [ "$EVENT_NAME" = "workflow_run" ]; then
+            case "$WORKFLOW_NAME" in
+              windows-llvm-msvc-build)
+                run_windows=true
+                windows_run_id="$WORKFLOW_RUN_ID"
+                ;;
+              android-llvm-msvc-build)
+                run_linux=true
+                linux_run_id="$WORKFLOW_RUN_ID"
+                ;;
+            esac
+          else
+            case "$INPUT_PLATFORM" in
+              all)
+                run_windows=true
+                run_linux=true
+                ;;
+              windows) run_windows=true ;;
+              linux) run_linux=true ;;
+            esac
+          fi
+
+          {
+            echo "commit=$commit"
+            echo "run_windows=$run_windows"
+            echo "run_linux=$run_linux"
+            echo "windows_run_id=$windows_run_id"
+            echo "linux_run_id=$linux_run_id"
+          } >> "$GITHUB_OUTPUT"
+
+  find-windows-run:
+    needs: plan
+    if: needs.plan.outputs.run_windows == 'true'
+    runs-on: ubuntu-latest
+    outputs:
+      run_id: ${{ steps.find.outputs.run_id }}
+    steps:
+      - name: Resolve Windows build run id
+        id: find
+        uses: actions/github-script@v7
+        env:
+          COMMIT: ${{ needs.plan.outputs.commit }}
+          RUN_ID: ${{ needs.plan.outputs.windows_run_id }}
+        with:
+          script: |
+            if (process.env.RUN_ID) {
+              core.setOutput('run_id', process.env.RUN_ID);
+              return;
+            }
+            const commit = process.env.COMMIT;
+            const { data } = await github.rest.actions.listWorkflowRuns({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: 'windows-llvm-msvc-build.yml',
+              head_sha: commit,
+              status: 'success',
+              per_page: 5,
+            });
+            const run = data.workflow_runs.find(r => r.conclusion === 'success');
+            if (!run) {
+              core.setFailed(`No successful windows-llvm-msvc-build run for ${commit}`);
+              return;
+            }
+            core.setOutput('run_id', String(run.id));
+
+  find-linux-run:
+    needs: plan
+    if: needs.plan.outputs.run_linux == 'true'
+    runs-on: ubuntu-latest
+    outputs:
+      run_id: ${{ steps.find.outputs.run_id }}
+    steps:
+      - name: Resolve Linux build run id
+        id: find
+        uses: actions/github-script@v7
+        env:
+          COMMIT: ${{ needs.plan.outputs.commit }}
+          RUN_ID: ${{ needs.plan.outputs.linux_run_id }}
+        with:
+          script: |
+            if (process.env.RUN_ID) {
+              core.setOutput('run_id', process.env.RUN_ID);
+              return;
+            }
+            const commit = process.env.COMMIT;
+            const { data } = await github.rest.actions.listWorkflowRuns({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: 'android-llvm-msvc-build.yml',
+              head_sha: commit,
+              status: 'success',
+              per_page: 5,
+            });
+            const run = data.workflow_runs.find(r => r.conclusion === 'success');
+            if (!run) {
+              core.setFailed(`No successful android-llvm-msvc-build run for ${commit}`);
+              return;
+            }
+            core.setOutput('run_id', String(run.id));
+
+  test-windows:
+    needs: [plan, find-windows-run]
+    if: needs.plan.outputs.run_windows == 'true'
+    runs-on: windows-2022
+    steps:
+      - name: Checkout test inputs
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.plan.outputs.commit }}
+
+      - name: Download Windows PR build artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-llvm-msvc
+          run-id: ${{ needs.find-windows-run.outputs.run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: artifacts/windows
+
+      - name: Extract install prefix
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Set-Location artifacts/windows
+          $first = Get-ChildItem -Filter 'windows-llvm-msvc.zip.*' | Sort-Object Name | Select-Object -First 1
+          if (-not $first) { throw 'windows-llvm-msvc zip parts not found' }
+          7z x $first.Name
+
+      - name: Verify issue #176 on Windows binary
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          & .github/workflows/scripts/verify-issue176.ps1 `
+            -InstallPrefix "$PWD/artifacts/windows/install" `
+            -RepoRoot "$PWD"
+
+  test-linux:
+    needs: [plan, find-linux-run]
+    if: needs.plan.outputs.run_linux == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout test inputs
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.plan.outputs.commit }}
+
+      - name: Install 7z
+        run: sudo apt-get update && sudo apt-get install -y p7zip-full
+
+      - name: Download Linux PR build artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: android-llvm-msvc
+          run-id: ${{ needs.find-linux-run.outputs.run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: artifacts/linux
+
+      - name: Extract install prefix
+        run: |
+          set -euo pipefail
+          cd artifacts/linux
+          7z x android-llvm-msvc.zip
+
+      - name: Verify issue #176 on Linux binary
+        run: |
+          chmod +x .github/workflows/scripts/verify-issue176.sh
+          .github/workflows/scripts/verify-issue176.sh "$PWD/artifacts/linux/install" "$PWD"
