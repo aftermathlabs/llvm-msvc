@@ -2990,7 +2990,7 @@ bool X86DAGToDAGISel::selectAddr(SDNode *Parent, SDValue N, SDValue &Base,
                                  SDValue &Disp, SDValue &Segment) {
   X86ISelAddressMode AM;
 
-  if (auto *MemParent = dyn_cast<MemSDNode>(Parent)) {
+  if (auto *MemParent = dyn_cast_if_present<MemSDNode>(Parent)) {
     unsigned AddrSpace = MemParent->getPointerInfo().getAddrSpace();
     if (AddrSpace == X86AS::GS)
       AM.Segment = CurDAG->getRegister(X86::GS, MVT::i16);
