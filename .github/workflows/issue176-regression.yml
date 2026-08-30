@@ -24,8 +24,10 @@ on:
           - linux
         default: all
 
+# Windows and Linux builds finish independently. Include the triggering
+# workflow name so the second completion does not cancel the first test.
 concurrency:
-  group: issue176-regression-${{ github.event.workflow_run.head_sha || github.sha }}-${{ github.event_name }}
+  group: issue176-regression-${{ github.event.workflow_run.head_sha || github.sha }}-${{ github.event.workflow_run.name || github.event.inputs.platform || 'all' }}-${{ github.event_name }}
   cancel-in-progress: true
 
 jobs:
@@ -187,9 +189,16 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           Set-Location artifacts/windows
-          $first = Get-ChildItem -Filter 'windows-llvm-msvc.zip.*' | Sort-Object Name | Select-Object -First 1
+          Get-ChildItem | Format-Table Name, Length
+          $first = Get-ChildItem -Filter 'windows-llvm-msvc.zip.001' | Select-Object -First 1
+          if (-not $first) {
+            $first = Get-ChildItem -Filter 'windows-llvm-msvc.zip.*' | Sort-Object Name | Select-Object -First 1
+          }
           if (-not $first) { throw 'windows-llvm-msvc zip parts not found' }
-          7z x $first.Name
+          7z x $first.FullName
+          if (-not (Test-Path 'install\bin\clang++.exe')) {
+            throw 'install/bin/clang++.exe missing after extract'
+          }
 
       - name: Verify issue #176 on Windows binary
         shell: pwsh
@@ -224,7 +233,10 @@ jobs:
         run: |
           set -euo pipefail
           cd artifacts/linux
+          ls -la
           7z x android-llvm-msvc.zip
+          test -x install/bin/clang++
+          test -x install/bin/llc
 
       - name: Verify issue #176 on Linux binary
         run: |
