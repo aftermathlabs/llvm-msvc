@@ -4,7 +4,7 @@
 #
 #    pip-compile --output-file=requirements.txt requirements.txt.in
 #
-certifi==2023.7.22
+certifi==2026.10.19
     # via
     #   -r requirements.txt.in
     #   requests
