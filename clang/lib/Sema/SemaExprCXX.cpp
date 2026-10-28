@@ -4953,6 +4953,7 @@ static bool CheckUnaryTypeTraitTypeCompleteness(Sema &S, TypeTrait UTT,
 
   // LWG3823: T shall be an array type, a complete type, or cv void.
   case UTT_IsAggregate:
+  case UTT_IsImplicitLifetime:
     if (ArgTy->isArrayType() || ArgTy->isVoidType())
       return true;
 
@@ -5466,6 +5467,41 @@ static bool EvaluateUnaryTypeTrait(Sema &Self, TypeTrait UTT,
     return false;
   case UTT_IsTriviallyEqualityComparable:
     return T.isTriviallyEqualityComparableType(C);
+  case UTT_IsImplicitLifetime: {
+    if (T->isVariableArrayType()) {
+      Self.Diag(KeyLoc, diag::err_vla_unsupported)
+          << 1 << tok::kw___builtin_is_implicit_lifetime;
+      return false;
+    }
+
+    // [basic.types.general] p9
+    // Scalar types, implicit-lifetime class types ([class.prop]),
+    // array types, and cv-qualified versions of these types
+    // are collectively called implicit-lifetime types.
+    QualType UnqualT = T->getCanonicalTypeUnqualified();
+    if (UnqualT->isScalarType())
+      return true;
+    if (UnqualT->isArrayType() || UnqualT->isVectorType())
+      return true;
+    const CXXRecordDecl *RD = UnqualT->getAsCXXRecordDecl();
+    if (!RD)
+      return false;
+
+    // [class.prop] p9
+    // A class S is an implicit-lifetime class if
+    //   - it is an aggregate whose destructor is not user-provided or
+    //   - it has at least one trivial eligible constructor and a trivial,
+    //     non-deleted destructor.
+    const CXXDestructorDecl *Dtor = RD->getDestructor();
+    if (UnqualT->isAggregateType())
+      if (Dtor && !Dtor->isUserProvided())
+        return true;
+    if (RD->hasTrivialDestructor() && (!Dtor || !Dtor->isDeleted()))
+      if (RD->hasTrivialDefaultConstructor() ||
+          RD->hasTrivialCopyConstructor() || RD->hasTrivialMoveConstructor())
+        return true;
+    return false;
+  }
   }
 }
 
@@ -5483,15 +5519,19 @@ static bool EvaluateBooleanTypeTrait(Sema &S, TypeTrait Kind,
   if (Kind <= UTT_Last)
     return EvaluateUnaryTypeTrait(S, Kind, KWLoc, Args[0]->getType());
 
-  // Evaluate ReferenceBindsToTemporary and ReferenceConstructsFromTemporary
-  // alongside the IsConstructible traits to avoid duplication.
-  if (Kind <= BTT_Last && Kind != BTT_ReferenceBindsToTemporary && Kind != BTT_ReferenceConstructsFromTemporary)
+  // Evaluate ReferenceBindsToTemporary, ReferenceConstructsFromTemporary and
+  // ReferenceConvertsFromTemporary alongside the IsConstructible traits to
+  // avoid duplication.
+  if (Kind <= BTT_Last && Kind != BTT_ReferenceBindsToTemporary &&
+      Kind != BTT_ReferenceConstructsFromTemporary &&
+      Kind != BTT_ReferenceConvertsFromTemporary)
     return EvaluateBinaryTypeTrait(S, Kind, Args[0]->getType(),
                                    Args[1]->getType(), RParenLoc);
 
   switch (Kind) {
   case clang::BTT_ReferenceBindsToTemporary:
   case clang::BTT_ReferenceConstructsFromTemporary:
+  case clang::BTT_ReferenceConvertsFromTemporary:
   case clang::TT_IsConstructible:
   case clang::TT_IsNothrowConstructible:
   case clang::TT_IsTriviallyConstructible: {
@@ -5555,8 +5595,10 @@ static bool EvaluateBooleanTypeTrait(Sema &S, TypeTrait Kind,
     Sema::ContextRAII TUContext(S, S.Context.getTranslationUnitDecl());
     InitializedEntity To(
         InitializedEntity::InitializeTemporary(S.Context, Args[0]));
-    InitializationKind InitKind(InitializationKind::CreateDirect(KWLoc, KWLoc,
-                                                                 RParenLoc));
+    InitializationKind InitKind(
+        Kind == clang::BTT_ReferenceConvertsFromTemporary
+            ? InitializationKind::CreateCopy(KWLoc, KWLoc)
+            : InitializationKind::CreateDirect(KWLoc, KWLoc, RParenLoc));
     InitializationSequence Init(S, To, InitKind, ArgExprs);
     if (Init.Failed())
       return false;
@@ -5568,7 +5610,9 @@ static bool EvaluateBooleanTypeTrait(Sema &S, TypeTrait Kind,
     if (Kind == clang::TT_IsConstructible)
       return true;
 
-    if (Kind == clang::BTT_ReferenceBindsToTemporary || Kind == clang::BTT_ReferenceConstructsFromTemporary) {
+    if (Kind == clang::BTT_ReferenceBindsToTemporary ||
+        Kind == clang::BTT_ReferenceConstructsFromTemporary ||
+        Kind == clang::BTT_ReferenceConvertsFromTemporary) {
       if (!T->isReferenceType())
         return false;
 
@@ -5919,6 +5963,34 @@ static bool EvaluateBinaryTypeTrait(Sema &Self, TypeTrait BTT, QualType LhsT,
 
     llvm_unreachable("unhandled type trait");
     return false;
+  }
+  case BTT_IsLayoutCompatible: {
+    if (!LhsT->isVoidType() && !LhsT->isIncompleteArrayType())
+      Self.RequireCompleteType(KeyLoc, LhsT, diag::err_incomplete_type);
+    if (!RhsT->isVoidType() && !RhsT->isIncompleteArrayType())
+      Self.RequireCompleteType(KeyLoc, RhsT, diag::err_incomplete_type);
+
+    if (LhsT->isVariableArrayType() || RhsT->isVariableArrayType()) {
+      Self.Diag(KeyLoc, diag::err_vla_unsupported)
+          << 1 << tok::kw___is_layout_compatible;
+      return false;
+    }
+
+    return Self.IsLayoutCompatible(LhsT, RhsT);
+  }
+  case BTT_IsPointerInterconvertibleBaseOf: {
+    if (LhsT->isStructureOrClassType() && RhsT->isStructureOrClassType() &&
+        !Self.getASTContext().hasSameUnqualifiedType(LhsT, RhsT)) {
+      Self.RequireCompleteType(KeyLoc, RhsT, diag::err_incomplete_type);
+    }
+
+    if (LhsT->isVariableArrayType() || RhsT->isVariableArrayType()) {
+      Self.Diag(KeyLoc, diag::err_vla_unsupported)
+          << 1 << tok::kw___is_pointer_interconvertible_base_of;
+      return false;
+    }
+
+    return Self.IsPointerInterconvertibleBaseOf(KeyLoc, LhsT, RhsT);
   }
     default: llvm_unreachable("not a BTT");
   }

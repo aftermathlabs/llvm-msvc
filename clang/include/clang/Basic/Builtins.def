@@ -481,12 +481,12 @@ BUILTIN(__builtin_ctanhl, "XLdXLd", "Fne")
 BUILTIN(__builtin_complex, "v.", "nctE")
 
 // FP Comparisons.
-BUILTIN(__builtin_isgreater     , "i.", "Fnct")
-BUILTIN(__builtin_isgreaterequal, "i.", "Fnct")
-BUILTIN(__builtin_isless        , "i.", "Fnct")
-BUILTIN(__builtin_islessequal   , "i.", "Fnct")
-BUILTIN(__builtin_islessgreater , "i.", "Fnct")
-BUILTIN(__builtin_isunordered   , "i.", "Fnct")
+BUILTIN(__builtin_isgreater     , "i.", "FnctE")
+BUILTIN(__builtin_isgreaterequal, "i.", "FnctE")
+BUILTIN(__builtin_isless        , "i.", "FnctE")
+BUILTIN(__builtin_islessequal   , "i.", "FnctE")
+BUILTIN(__builtin_islessgreater , "i.", "FnctE")
+BUILTIN(__builtin_isunordered   , "i.", "FnctE")
 
 // Unary FP classification
 BUILTIN(__builtin_fpclassify, "iiiiii.", "FnctE")
@@ -501,9 +501,9 @@ BUILTIN(__builtin_issignaling,"i.", "FnctE")
 BUILTIN(__builtin_isfpclass,  "i.", "nctE")
 
 // FP signbit builtins
-BUILTIN(__builtin_signbit, "i.", "Fnct")
-BUILTIN(__builtin_signbitf, "if", "Fnc")
-BUILTIN(__builtin_signbitl, "iLd", "Fnc")
+BUILTIN(__builtin_signbit, "i.", "FnctE")
+BUILTIN(__builtin_signbitf, "if", "FncE")
+BUILTIN(__builtin_signbitl, "iLd", "FncE")
 
 // Special FP builtins.
 BUILTIN(__builtin_canonicalize, "dd", "nc")
